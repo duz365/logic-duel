@@ -18,7 +18,7 @@ const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
 const MODEL = 'deepseek-ai/DeepSeek-V4-Flash';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
-const API_TIMEOUT = 30000; // 30秒超时
+const API_TIMEOUT = 100000; // 30秒超时
 
 console.log('========================================');
 console.log('服务器启动中...');
