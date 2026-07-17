@@ -16,7 +16,7 @@ app.use(express.json());
 // ==================== 配置 ====================
 const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'Qwen/Qwen2.5-7B-Instruct';  // 最快的模型
+const MODEL = 'Qwen/Qwen2.5-7B-Instruct';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
 
 console.log('========================================');
@@ -41,9 +41,32 @@ function getPlayersList(room) {
   }));
 }
 
+// ==================== 规则分配逻辑 ====================
+function getRuleCounts(playerCount) {
+  // 每人2条规则
+  const totalRules = playerCount * 2;
+  
+  let falseCount;
+  if (playerCount <= 4) {
+    falseCount = 1;
+  } else if (playerCount <= 6) {
+    falseCount = 2;
+  } else {
+    falseCount = 3;
+  }
+  
+  const trueCount = totalRules - falseCount;
+  
+  return { totalRules, trueCount, falseCount };
+}
+
 // ==================== AI 生成案件 ====================
-async function generateCase() {
+async function generateCase(playerCount) {
   console.log('\n===== 开始生成案件 =====');
+  console.log('玩家数:', playerCount);
+  
+  const { trueCount, falseCount } = getRuleCounts(playerCount);
+  console.log(`真规则: ${trueCount}条, 假规则: ${falseCount}条`);
   
   if (!API_KEY) {
     console.log('❌ 没有API_KEY，使用默认案件');
@@ -53,21 +76,21 @@ async function generateCase() {
   const prompt = `你是一个逻辑谜题设计师。请生成一个严谨的推理案件。
 
 要求：
-1. 案件必须有一个明确的凶手。
-2. 生成6条"真规则"（逻辑线索），合起来能唯一指向凶手。
-3. 生成2条"假规则"（表面合理但与真规则逻辑矛盾）。
+1. 案件有3个嫌疑人，其中一个是明确的凶手。
+2. 生成${trueCount}条"真规则"（逻辑线索），合起来能唯一指向凶手。
+3. 生成${falseCount}条"假规则"（表面合理但与真规则逻辑矛盾）。
 4. 每条规则用简洁的陈述句，不超过30字。
-5. 真规则集必须满足：缺失任何一条都无法确定凶手。
+5. 真规则集必须满足：缺失任何一条都无法确定凶手（每条都是必要条件）。
 6. 假规则不能是真规则的直接否定，要是"逻辑变体"。
 
-输出格式（纯JSON，不要markdown标记）：
+输出格式（纯JSON，不要markdown标记，不要注释）：
 {
   "caseTitle": "案件标题",
   "caseDescription": "案件描述，100字以内",
   "suspects": ["嫌疑人A", "嫌疑人B", "嫌疑人C"],
-  "murderer": "凶手名字",
-  "trueRules": ["真规则1", "真规则2", "真规则3", "真规则4", "真规则5", "真规则6"],
-  "falseRules": ["假规则1", "假规则2"],
+  "murderer": "凶手名字（必须是suspects中的一个）",
+  "trueRules": [${Array(trueCount).fill('"规则"').join(', ')}],
+  "falseRules": [${Array(falseCount).fill('"规则"').join(', ')}],
   "reasoning": "完整的逻辑推理链"
 }`;
 
@@ -76,7 +99,7 @@ async function generateCase() {
     
     const controller = new AbortController();
     const timeout = setTimeout(() => {
-      console.log('⏰ API调用超时(15秒)，使用默认案件');
+      console.log('⏰ API调用超时(15秒)');
       controller.abort();
     }, 15000);
 
@@ -111,6 +134,7 @@ async function generateCase() {
     const parsed = JSON.parse(content);
     console.log('✅ AI案件生成成功:', parsed.caseTitle);
     console.log('凶手:', parsed.murderer);
+    console.log('真规则数:', parsed.trueRules.length, '假规则数:', parsed.falseRules.length);
     return parsed;
     
   } catch (error) {
@@ -123,7 +147,7 @@ function getDefaultCase() {
   console.log('使用默认案件');
   return {
     caseTitle: "博物馆失窃案",
-    caseDescription: "深夜，市博物馆的名画《星空下的猫》被盗。现场有三个嫌疑人：保安张三、清洁工李四、馆长王五。只有一人是真正的小偷。",
+    caseDescription: "深夜，市博物馆的名画《星空下的猫》被盗。现场有三个嫌疑人：保安张三、清洁工李四、馆长王五。",
     suspects: ["保安张三", "清洁工李四", "馆长王五"],
     murderer: "清洁工李四",
     trueRules: [
@@ -135,10 +159,9 @@ function getDefaultCase() {
       "保安张三身高178cm"
     ],
     falseRules: [
-      "监控显示案发时间只有一人进入过展厅",
-      "清洁工李四在案发时间已经下班回家"
+      "监控显示案发时间只有一人进入过展厅"
     ],
-    reasoning: "监控显示两人进入展厅，排除单独作案可能。张三和王五在案发时间一起喝酒，互相作证，两人均被排除。小偷身高不超过175cm，王五182cm、张三178cm均不符合，只有李四170cm符合条件。因此李四是小偷。"
+    reasoning: "监控显示两人进入展厅，排除单独作案。张三和王五一起喝酒互相作证，两人排除。小偷身高≤175cm，王五182cm、张三178cm不符合，只有李四170cm符合。"
   };
 }
 
@@ -154,29 +177,45 @@ function shuffleArray(arr) {
 
 function assignRules(trueRules, falseRules, playerCount) {
   const shuffledTrue = shuffleArray(trueRules);
-  const falseCount = Math.min(2, playerCount - 1);
-  const shuffledFalse = shuffleArray(falseRules).slice(0, falseCount);
+  const shuffledFalse = shuffleArray(falseRules);
+  
+  // 确定哪些玩家拿到假规则（随机选择）
+  const falseHolderIndices = shuffleArray([...Array(playerCount).keys()]).slice(0, shuffledFalse.length);
   
   const assignments = [];
-  const falseHolderIndices = shuffleArray([...Array(playerCount).keys()]).slice(0, falseCount);
   let trueIndex = 0;
   let falseIndex = 0;
   
   for (let i = 0; i < playerCount; i++) {
     const playerRules = [];
-    const trueCount = Math.floor(trueRules.length / playerCount) + (i < trueRules.length % playerCount ? 1 : 0);
-    for (let j = 0; j < trueCount && trueIndex < shuffledTrue.length; j++) {
+    
+    if (falseHolderIndices.includes(i) && falseIndex < shuffledFalse.length) {
+      // 这个玩家拿到1条假规则 + 1条真规则
+      playerRules.push({ rule: shuffledFalse[falseIndex], isTrue: false });
+      falseIndex++;
+      playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
+      trueIndex++;
+    } else {
+      // 这个玩家拿到2条真规则
+      playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
+      trueIndex++;
       playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
       trueIndex++;
     }
     
-    if (falseHolderIndices.includes(i) && falseIndex < shuffledFalse.length) {
-      playerRules.push({ rule: shuffledFalse[falseIndex], isTrue: false });
-      falseIndex++;
-    }
-    
-    assignments.push({ playerIndex: i, playerRules, hasFalse: falseHolderIndices.includes(i) });
+    assignments.push({ 
+      playerIndex: i, 
+      playerRules, 
+      hasFalse: falseHolderIndices.includes(i) 
+    });
   }
+  
+  // 打印分配情况
+  console.log('规则分配:');
+  assignments.forEach((a, i) => {
+    const rules = a.playerRules.map(r => `${r.isTrue ? '真' : '假'}:${r.rule.substring(0, 15)}...`);
+    console.log(`  玩家${i}: [${rules.join(', ')}] ${a.hasFalse ? '🔴持有假规则' : '🟢纯真规则'}`);
+  });
   
   return assignments;
 }
@@ -226,15 +265,16 @@ io.on('connection', (socket) => {
       return;
     }
 
-    console.log('\n🎮 开始游戏，房间:', roomId, '玩家数:', room.players.size);
+    const playerCount = room.players.size;
+    console.log(`\n🎮 开始游戏，房间: ${roomId}，玩家数: ${playerCount}`);
     room.phase = 'preparing';
     io.to(roomId).emit('phaseChange', { phase: 'preparing', message: '正在生成案件...' });
 
-    const caseData = await generateCase();
+    const caseData = await generateCase(playerCount);
     room.caseData = caseData;
     
     const playerIds = Array.from(room.players.keys());
-    const assignments = assignRules(caseData.trueRules, caseData.falseRules, playerIds.length);
+    const assignments = assignRules(caseData.trueRules, caseData.falseRules, playerCount);
     
     room.playerAssignments = [];
     for (let i = 0; i < playerIds.length; i++) {
@@ -250,7 +290,7 @@ io.on('connection', (socket) => {
     room.accusations = [];
     room.discussReady = new Set();
     
-    io.to(roomId).emit('phaseChange', { phase: 'reading', message: '请查看你的规则手册' });
+    io.to(roomId).emit('phaseChange', { phase: 'reading', message: '请查看你的规则手册（每人2条规则）' });
     
     for (const assignment of room.playerAssignments) {
       const ps = io.sockets.sockets.get(assignment.playerId);
