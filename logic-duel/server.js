@@ -18,14 +18,12 @@ const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
 const MODEL = 'deepseek-ai/DeepSeek-V4-Flash';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
-const API_TIMEOUT = 100000; // 30秒超时
+const API_TIMEOUT = 30000;
 
 console.log('========================================');
 console.log('服务器启动中...');
 console.log('API_KEY 存在:', !!API_KEY);
-console.log('API_KEY 前6位:', API_KEY ? API_KEY.substring(0, 6) : '无');
 console.log('模型:', MODEL);
-console.log('API超时:', API_TIMEOUT/1000, '秒');
 console.log('========================================');
 
 // ==================== 房间管理 ====================
@@ -74,34 +72,26 @@ async function generateCase(playerCount) {
     return getDefaultCase();
   }
 
-  const prompt = `你是一个逻辑谜题设计师。请生成一个严谨的推理案件。
+  const prompt = `生成一个推理案件。输出纯JSON，不要markdown，不要注释。
 
-要求：
-1. 案件有3个嫌疑人，其中一个是明确的凶手。
-2. 生成${trueCount}条"真规则"（逻辑线索），合起来能唯一指向凶手。
-3. 生成${falseCount}条"假规则"（表面合理但与真规则逻辑矛盾）。
-4. 每条规则用简洁的陈述句，不超过30字。
-5. 真规则集必须满足：缺失任何一条都无法确定凶手（每条都是必要条件）。
-6. 假规则不能是真规则的直接否定，要是"逻辑变体"。
+案件要求：
+- 3个嫌疑人，其中1个是明确的凶手
+- ${trueCount}条真规则（逻辑线索，合起来唯一指向凶手）
+- ${falseCount}条假规则（表面合理但与真规则逻辑矛盾）
+- 每条规则不超过30字
+- 缺失任何一条真规则都无法确定凶手
+- 假规则不能是真规则的直接否定
 
-输出格式（纯JSON，不要markdown标记，不要注释）：
-{
-  "caseTitle": "案件标题",
-  "caseDescription": "案件描述，100字以内",
-  "suspects": ["嫌疑人A", "嫌疑人B", "嫌疑人C"],
-  "murderer": "凶手名字（必须是suspects中的一个）",
-  "trueRules": [${Array(trueCount).fill('"规则"').join(', ')}],
-  "falseRules": [${Array(falseCount).fill('"规则"').join(', ')}],
-  "reasoning": "完整的逻辑推理链"
-}`;
+输出格式：
+{"caseTitle":"标题","caseDescription":"描述100字内","suspects":["A","B","C"],"murderer":"凶手名","trueRules":["规则1"...共${trueCount}条],"falseRules":["规则1"...共${falseCount}条],"reasoning":"推理链"}`;
 
   try {
-    console.log('正在调用硅基流动API...');
+    console.log('正在调用API...');
     console.log('开始时间:', new Date().toLocaleTimeString());
     
     const controller = new AbortController();
     const timeout = setTimeout(() => {
-      console.log('⏰ API调用超时(' + API_TIMEOUT/1000 + '秒)');
+      console.log('⏰ API超时(' + API_TIMEOUT/1000 + '秒)');
       controller.abort();
     }, API_TIMEOUT);
 
@@ -115,7 +105,7 @@ async function generateCase(playerCount) {
         model: MODEL,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.6,
-        max_tokens: 2000
+        max_tokens: 1500
       }),
       signal: controller.signal
     });
@@ -126,24 +116,25 @@ async function generateCase(playerCount) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ API请求失败:', response.status);
-      console.error('错误详情:', errorText.substring(0, 200));
+      console.error('❌ API错误:', response.status);
+      console.error('详情:', errorText.substring(0, 300));
       return getDefaultCase();
     }
 
     const data = await response.json();
     let content = data.choices[0].message.content;
     console.log('原始返回长度:', content.length);
+    
     content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     const parsed = JSON.parse(content);
-    console.log('✅ AI案件生成成功:', parsed.caseTitle);
+    console.log('✅ 案件生成成功:', parsed.caseTitle);
     console.log('凶手:', parsed.murderer);
-    console.log('真规则数:', parsed.trueRules?.length, '假规则数:', parsed.falseRules?.length);
+    console.log('真规则:', parsed.trueRules?.length, '条 | 假规则:', parsed.falseRules?.length, '条');
     return parsed;
     
   } catch (error) {
-    console.error('❌ API调用异常:', error.message);
+    console.error('❌ API异常:', error.message);
     if (error.name === 'AbortError') {
       console.error('请求被中止（超时）');
     }
