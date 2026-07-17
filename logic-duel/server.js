@@ -16,14 +16,16 @@ app.use(express.json());
 // ==================== 配置 ====================
 const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'Qwen/Qwen2.5-7B-Instruct';
+const MODEL = 'deepseek-ai/DeepSeek-V4-Flash';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
+const API_TIMEOUT = 30000; // 30秒超时
 
 console.log('========================================');
 console.log('服务器启动中...');
 console.log('API_KEY 存在:', !!API_KEY);
 console.log('API_KEY 前6位:', API_KEY ? API_KEY.substring(0, 6) : '无');
 console.log('模型:', MODEL);
+console.log('API超时:', API_TIMEOUT/1000, '秒');
 console.log('========================================');
 
 // ==================== 房间管理 ====================
@@ -43,7 +45,6 @@ function getPlayersList(room) {
 
 // ==================== 规则分配逻辑 ====================
 function getRuleCounts(playerCount) {
-  // 每人2条规则
   const totalRules = playerCount * 2;
   
   let falseCount;
@@ -96,12 +97,13 @@ async function generateCase(playerCount) {
 
   try {
     console.log('正在调用硅基流动API...');
+    console.log('开始时间:', new Date().toLocaleTimeString());
     
     const controller = new AbortController();
     const timeout = setTimeout(() => {
-      console.log('⏰ API调用超时(15秒)');
+      console.log('⏰ API调用超时(' + API_TIMEOUT/1000 + '秒)');
       controller.abort();
-    }, 15000);
+    }, API_TIMEOUT);
 
     const response = await fetch(API_URL, {
       method: 'POST',
@@ -120,25 +122,31 @@ async function generateCase(playerCount) {
 
     clearTimeout(timeout);
     console.log('API响应状态:', response.status);
+    console.log('结束时间:', new Date().toLocaleTimeString());
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ API请求失败:', response.status, errorText);
+      console.error('❌ API请求失败:', response.status);
+      console.error('错误详情:', errorText.substring(0, 200));
       return getDefaultCase();
     }
 
     const data = await response.json();
     let content = data.choices[0].message.content;
+    console.log('原始返回长度:', content.length);
     content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     const parsed = JSON.parse(content);
     console.log('✅ AI案件生成成功:', parsed.caseTitle);
     console.log('凶手:', parsed.murderer);
-    console.log('真规则数:', parsed.trueRules.length, '假规则数:', parsed.falseRules.length);
+    console.log('真规则数:', parsed.trueRules?.length, '假规则数:', parsed.falseRules?.length);
     return parsed;
     
   } catch (error) {
     console.error('❌ API调用异常:', error.message);
+    if (error.name === 'AbortError') {
+      console.error('请求被中止（超时）');
+    }
     return getDefaultCase();
   }
 }
@@ -179,7 +187,6 @@ function assignRules(trueRules, falseRules, playerCount) {
   const shuffledTrue = shuffleArray(trueRules);
   const shuffledFalse = shuffleArray(falseRules);
   
-  // 确定哪些玩家拿到假规则（随机选择）
   const falseHolderIndices = shuffleArray([...Array(playerCount).keys()]).slice(0, shuffledFalse.length);
   
   const assignments = [];
@@ -190,13 +197,11 @@ function assignRules(trueRules, falseRules, playerCount) {
     const playerRules = [];
     
     if (falseHolderIndices.includes(i) && falseIndex < shuffledFalse.length) {
-      // 这个玩家拿到1条假规则 + 1条真规则
       playerRules.push({ rule: shuffledFalse[falseIndex], isTrue: false });
       falseIndex++;
       playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
       trueIndex++;
     } else {
-      // 这个玩家拿到2条真规则
       playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
       trueIndex++;
       playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true });
@@ -210,7 +215,6 @@ function assignRules(trueRules, falseRules, playerCount) {
     });
   }
   
-  // 打印分配情况
   console.log('规则分配:');
   assignments.forEach((a, i) => {
     const rules = a.playerRules.map(r => `${r.isTrue ? '真' : '假'}:${r.rule.substring(0, 15)}...`);
