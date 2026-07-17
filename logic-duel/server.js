@@ -14,7 +14,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 // ==================== 配置 ====================
-const API_KEY = process.env.SILICONFLOW_API_KEY || '';
+const API_KEY = 'sk-hzjjcnobtffqkoghmnnocbhuuhalkbfofrjhlsyhwemtjwdq';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
 const MODEL = 'deepseek-ai/DeepSeek-V4-Pro';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
