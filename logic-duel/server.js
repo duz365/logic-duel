@@ -14,10 +14,17 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 // ==================== 配置 ====================
-const API_KEY = 'sk-hzjjcnobtffqkoghmnnocbhuuhalkbfofrjhlsyhwemtjwdq';
+const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'deepseek-ai/DeepSeek-V4-Pro';
+const MODEL = 'Qwen/Qwen2.5-7B-Instruct';  // 最快的模型
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
+
+console.log('========================================');
+console.log('服务器启动中...');
+console.log('API_KEY 存在:', !!API_KEY);
+console.log('API_KEY 前6位:', API_KEY ? API_KEY.substring(0, 6) : '无');
+console.log('模型:', MODEL);
+console.log('========================================');
 
 // ==================== 房间管理 ====================
 const rooms = new Map();
@@ -36,6 +43,13 @@ function getPlayersList(room) {
 
 // ==================== AI 生成案件 ====================
 async function generateCase() {
+  console.log('\n===== 开始生成案件 =====');
+  
+  if (!API_KEY) {
+    console.log('❌ 没有API_KEY，使用默认案件');
+    return getDefaultCase();
+  }
+
   const prompt = `你是一个逻辑谜题设计师。请生成一个严谨的推理案件。
 
 要求：
@@ -46,22 +60,26 @@ async function generateCase() {
 5. 真规则集必须满足：缺失任何一条都无法确定凶手。
 6. 假规则不能是真规则的直接否定，要是"逻辑变体"。
 
-输出格式（严格JSON，不要任何其他文字，不要markdown代码块标记）：
+输出格式（纯JSON，不要markdown标记）：
 {
   "caseTitle": "案件标题",
   "caseDescription": "案件描述，100字以内",
   "suspects": ["嫌疑人A", "嫌疑人B", "嫌疑人C"],
-  "murderer": "凶手名字（必须是suspects中的一个）",
+  "murderer": "凶手名字",
   "trueRules": ["真规则1", "真规则2", "真规则3", "真规则4", "真规则5", "真规则6"],
   "falseRules": ["假规则1", "假规则2"],
-  "reasoning": "完整的逻辑推理链，说明真规则如何唯一指向凶手"
+  "reasoning": "完整的逻辑推理链"
 }`;
 
-  if (!API_KEY) {
-    return getDefaultCase();
-  }
-
   try {
+    console.log('正在调用硅基流动API...');
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      console.log('⏰ API调用超时(15秒)，使用默认案件');
+      controller.abort();
+    }, 15000);
+
     const response = await fetch(API_URL, {
       method: 'POST',
       headers: {
@@ -73,11 +91,16 @@ async function generateCase() {
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.6,
         max_tokens: 2000
-      })
+      }),
+      signal: controller.signal
     });
 
+    clearTimeout(timeout);
+    console.log('API响应状态:', response.status);
+
     if (!response.ok) {
-      console.error('API请求失败:', response.status);
+      const errorText = await response.text();
+      console.error('❌ API请求失败:', response.status, errorText);
       return getDefaultCase();
     }
 
@@ -86,17 +109,18 @@ async function generateCase() {
     content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     const parsed = JSON.parse(content);
-    if (!parsed.murderer || !parsed.trueRules || !parsed.falseRules) {
-      throw new Error('返回数据不完整');
-    }
+    console.log('✅ AI案件生成成功:', parsed.caseTitle);
+    console.log('凶手:', parsed.murderer);
     return parsed;
+    
   } catch (error) {
-    console.error('AI生成案件失败:', error.message);
+    console.error('❌ API调用异常:', error.message);
     return getDefaultCase();
   }
 }
 
 function getDefaultCase() {
+  console.log('使用默认案件');
   return {
     caseTitle: "博物馆失窃案",
     caseDescription: "深夜，市博物馆的名画《星空下的猫》被盗。现场有三个嫌疑人：保安张三、清洁工李四、馆长王五。只有一人是真正的小偷。",
@@ -159,11 +183,12 @@ function assignRules(trueRules, falseRules, playerCount) {
 
 // ==================== Socket ====================
 io.on('connection', (socket) => {
-  console.log('连接:', socket.id);
+  console.log('新连接:', socket.id);
 
   socket.on('joinRoom', ({ nickname, roomId }) => {
     if (!nickname) return;
     const targetRoomId = roomId || generateRoomId();
+    console.log(`${nickname} 加入房间 ${targetRoomId}`);
     
     if (!rooms.has(targetRoomId)) {
       rooms.set(targetRoomId, {
@@ -201,6 +226,7 @@ io.on('connection', (socket) => {
       return;
     }
 
+    console.log('\n🎮 开始游戏，房间:', roomId, '玩家数:', room.players.size);
     room.phase = 'preparing';
     io.to(roomId).emit('phaseChange', { phase: 'preparing', message: '正在生成案件...' });
 
@@ -237,6 +263,8 @@ io.on('connection', (socket) => {
         });
       }
     }
+    
+    console.log('案件已分发，进入阅读阶段');
   });
 
   socket.on('readyToStatement', ({ roomId }) => {
@@ -299,15 +327,27 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('readyProgress', { ready: room.discussReady.size, total: room.players.size });
     
     if (room.discussReady.size === room.players.size) {
-      startAccusationPhase(room);
+      startAccusationPhase(room, roomId);
     }
   });
 
   socket.on('forceAccusation', ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room || room.host !== socket.id || room.phase !== 'discuss') return;
-    startAccusationPhase(room);
+    startAccusationPhase(room, roomId);
   });
+
+  function startAccusationPhase(room, roomId) {
+    room.phase = 'accusation';
+    room.accusations = [];
+    const players = getPlayersList(room);
+    io.to(roomId).emit('phaseChange', {
+      phase: 'accusation',
+      message: '指控阶段：指出谁持有假规则，以及谁是凶手',
+      players,
+      suspectList: room.caseData.suspects
+    });
+  }
 
   socket.on('submitAccusation', ({ roomId, falsePlayerId, murdererGuess }) => {
     const room = rooms.get(roomId);
@@ -327,9 +367,53 @@ io.on('connection', (socket) => {
     });
     
     if (room.accusations.length === room.players.size) {
-      calculateResults(room);
+      calculateResults(room, roomId);
     }
   });
+
+  function calculateResults(room, roomId) {
+    const caseData = room.caseData;
+    const realMurderer = caseData.murderer;
+    const falseHolders = room.playerAssignments.filter(a => a.hasFalse).map(a => a.playerId);
+    
+    const results = [];
+    let goodScore = 0;
+    let badScore = 0;
+    
+    for (const acc of room.accusations) {
+      const guessedFalseCorrect = falseHolders.includes(acc.falsePlayerId);
+      const guessedMurdererCorrect = (acc.murdererGuess === realMurderer);
+      const isFalseHolder = falseHolders.includes(acc.playerId);
+      
+      results.push({
+        nickname: acc.nickname,
+        guessedFalsePlayer: room.players.get(acc.falsePlayerId)?.nickname || '未知',
+        guessedMurderer: acc.murdererGuess,
+        guessedFalseCorrect,
+        guessedMurdererCorrect,
+        isFalseHolder
+      });
+      
+      if (!isFalseHolder) {
+        if (guessedFalseCorrect) goodScore++; else badScore++;
+        if (guessedMurdererCorrect) goodScore++; else badScore++;
+      }
+    }
+    
+    const winner = goodScore >= badScore ? '正方（推理者）' : '反方（误导者）';
+    room.phase = 'result';
+    
+    io.to(roomId).emit('gameResult', {
+      results,
+      falseHolders: falseHolders.map(id => room.players.get(id)?.nickname),
+      realMurderer,
+      goodScore,
+      badScore,
+      winner,
+      reasoning: caseData.reasoning,
+      caseTitle: caseData.caseTitle
+    });
+  }
 
   socket.on('leaveRoom', ({ roomId }) => handleLeave(socket, roomId));
   socket.on('disconnect', () => {
@@ -358,81 +442,7 @@ io.on('connection', (socket) => {
   }
 });
 
-function startAccusationPhase(room) {
-  room.phase = 'accusation';
-  room.accusations = [];
-  const players = getPlayersList(room);
-  io.to(room.host ? Array.from(rooms.entries()).find(([id, r]) => r === room)?.[0] : '').emit('phaseChange', {
-    phase: 'accusation',
-    message: '指控阶段：指出谁持有假规则，以及谁是凶手',
-    players,
-    suspectList: room.caseData.suspects
-  });
-  // 修复：广播到房间
-  for (const [rid, r] of rooms.entries()) {
-    if (r === room) {
-      io.to(rid).emit('phaseChange', {
-        phase: 'accusation',
-        message: '指控阶段：指出谁持有假规则，以及谁是凶手',
-        players,
-        suspectList: room.caseData.suspects
-      });
-      break;
-    }
-  }
-}
-
-function calculateResults(room) {
-  const caseData = room.caseData;
-  const realMurderer = caseData.murderer;
-  const falseHolders = room.playerAssignments.filter(a => a.hasFalse).map(a => a.playerId);
-  
-  const results = [];
-  let goodScore = 0;
-  let badScore = 0;
-  
-  for (const acc of room.accusations) {
-    const guessedFalseCorrect = falseHolders.includes(acc.falsePlayerId);
-    const guessedMurdererCorrect = (acc.murdererGuess === realMurderer);
-    const isFalseHolder = falseHolders.includes(acc.playerId);
-    
-    results.push({
-      nickname: acc.nickname,
-      guessedFalsePlayer: room.players.get(acc.falsePlayerId)?.nickname || '未知',
-      guessedMurderer: acc.murdererGuess,
-      guessedFalseCorrect,
-      guessedMurdererCorrect,
-      isFalseHolder
-    });
-    
-    if (!isFalseHolder) {
-      if (guessedFalseCorrect) goodScore++; else badScore++;
-      if (guessedMurdererCorrect) goodScore++; else badScore++;
-    }
-  }
-  
-  const winner = goodScore >= badScore ? '正方（推理者）' : '反方（误导者）';
-  room.phase = 'result';
-  
-  for (const [rid, r] of rooms.entries()) {
-    if (r === room) {
-      io.to(rid).emit('gameResult', {
-        results,
-        falseHolders: falseHolders.map(id => room.players.get(id)?.nickname),
-        realMurderer,
-        goodScore,
-        badScore,
-        winner,
-        reasoning: caseData.reasoning,
-        caseTitle: caseData.caseTitle
-      });
-      break;
-    }
-  }
-}
-
-// ==================== 启动 ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`服务器运行在端口 ${PORT}`);
+  console.log(`\n✅ 服务器运行在端口 ${PORT}`);
 });
