@@ -81,15 +81,15 @@ async function generateCase(playerCount) {
   const prompt = `你是逻辑谜题大师。生成一个严谨推理案件。输出纯JSON。
 
 核心约束：
-- 嫌疑人3个，中文名随机创造（禁止张三李四王五等常见名）
+- 嫌疑人3个，中文名随机创造（如沈雨薇、韩志远、秦小曼等，禁止张三李四王五）
 - 严格生成${totalRules}条规则，其中${trueCount}条真规则、${falseCount}条假规则
-- 每条≤18字，简洁陈述句
+- 每条≤18字，简洁陈述句，每条规则中必须至少包含一个嫌疑人的名字
 - 用全部${trueCount}条真规则必须能唯一推出凶手，移除任何一条都无法确定
-- 每条真规则都是必要条件，不能用"排除法"绕过
+- 每条真规则都是必要条件
 - 假规则与真规则形成微妙矛盾，但不是直接否定
 - 案例描述中直接写出嫌疑人名字
 
-{"caseTitle":"≤8字","caseDescription":"嫌疑人XX、YY和ZZ...≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":[""...严格${trueCount}条],"falseRules":[""...严格${falseCount}条],"reasoning":"用全部真规则逐步推导出凶手的完整逻辑链，≤100字"}`;
+{"caseTitle":"≤8字","caseDescription":"嫌疑人XX、YY和ZZ...≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":[""...严格${trueCount}条，每条含嫌疑人名],"falseRules":[""...严格${falseCount}条，每条含嫌疑人名],"reasoning":"用全部真规则逐步推导出凶手的完整逻辑链，≤100字"}`;
 
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
