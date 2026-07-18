@@ -59,6 +59,73 @@ function getRuleCounts(playerCount) {
   return { totalRules, trueCount, falseCount };
 }
 
+// ==================== 预设案件库 ====================
+const presetCases = [
+  {
+    caseTitle: "博物馆失窃案",
+    caseDescription: "深夜，市博物馆的名画《星空下的猫》被盗。现场有三个嫌疑人：保安张三、清洁工李四、馆长王五。",
+    suspects: ["保安张三", "清洁工李四", "馆长王五"],
+    murderer: "清洁工李四",
+    trueRules: [
+      "监控显示案发时间有两人进入过展厅",
+      "保安张三和馆长王五在案发时间在一起喝酒",
+      "小偷身高不超过175cm",
+      "清洁工李四身高170cm",
+      "馆长王五身高182cm",
+      "保安张三身高178cm",
+      "展厅窗户从内部锁着，没有被撬痕迹",
+      "清洁工李四有展厅的备用钥匙"
+    ],
+    falseRules: [
+      "监控显示案发时间只有一人进入过展厅",
+      "清洁工李四在案发时间已经下班回家"
+    ],
+    reasoning: "监控显示两人进入展厅，排除单独作案。张三和王五一起喝酒互相作证，两人排除。小偷身高≤175cm，王五182cm、张三178cm不符合，只有李四170cm符合。窗户内部锁着说明是内部人员作案，李四有备用钥匙。因此李四是小偷。"
+  },
+  {
+    caseTitle: "毒杀晚宴",
+    caseDescription: "富豪王某在家中举办晚宴时中毒身亡。当晚只有三个人接触过他的酒杯：他的妻子王太太、商业伙伴老张、私人医生陈医生。",
+    suspects: ["王太太", "老张", "陈医生"],
+    murderer: "王太太",
+    trueRules: [
+      "毒药在红酒中，需要5分钟才会发作",
+      "王太太在案发前10分钟给王某倒过酒",
+      "老张在案发前3分钟和王某碰过杯",
+      "陈医生在案发前8分钟给王某递过药",
+      "毒药遇到水会变成蓝色",
+      "王某的酒杯内壁有蓝色残留",
+      "陈医生的药是胶囊，不接触酒杯",
+      "老张和王某喝的是同一瓶酒，老张没事"
+    ],
+    falseRules: [
+      "毒药是速效的，1分钟内发作",
+      "陈医生的药和水接触后会变蓝"
+    ],
+    reasoning: "毒药5分钟发作+酒杯有蓝色残留=毒在酒里且接触了水。陈医生给的是胶囊不接触酒杯，排除。老张和王某喝同一瓶酒却没事，说明毒不在酒瓶里，排除老张。王太太倒酒时最有机会下毒，且10分钟前倒酒符合5分钟发作时间线。因此王太太是凶手。"
+  },
+  {
+    caseTitle: "坠楼疑云",
+    caseDescription: "某公司员工李某从18楼坠亡。警方锁定三名嫌疑人：他的上司赵总、同事小周、以及前女友孙小姐。",
+    suspects: ["赵总", "小周", "孙小姐"],
+    murderer: "赵总",
+    trueRules: [
+      "李某坠楼前收到一条短信，内容是'来天台'",
+      "赵总的手机在案发时间给李某发过短信",
+      "天台的监控在案发当天被人为关闭",
+      "孙小姐在案发时有不在场证明，她在医院陪护",
+      "小周和赵总在案发后互相指认对方",
+      "李某的指甲里有皮肤组织，DNA属于赵总",
+      "赵总的手腕上有新鲜的抓痕",
+      "李某的办公桌里有一封举报赵总贪污的信"
+    ],
+    falseRules: [
+      "天台监控在案发当天正常工作",
+      "孙小姐在案发时出现在公司大楼"
+    ],
+    reasoning: "指甲DNA+手腕抓痕=李某和赵总有过肢体冲突。发短信约天台+关监控=预谋。孙小姐有不在场证明，排除。小周和赵总互相指认，但物理证据指向赵总。举报信提供了动机。因此赵总是凶手。"
+  }
+];
+
 // ==================== AI 生成案件 ====================
 async function generateCase(playerCount) {
   console.log('\n===== 开始生成案件 =====');
@@ -67,8 +134,28 @@ async function generateCase(playerCount) {
   const { trueCount, falseCount } = getRuleCounts(playerCount);
   console.log(`真规则: ${trueCount}条, 假规则: ${falseCount}条`);
   
+  // 优先从预设案件中选
+  const suitableCases = presetCases.filter(c => 
+    c.trueRules.length >= trueCount && c.falseRules.length >= falseCount
+  );
+  
+  if (suitableCases.length > 0) {
+    const selected = suitableCases[Math.floor(Math.random() * suitableCases.length)];
+    console.log('✅ 使用预设案件:', selected.caseTitle);
+    return {
+      caseTitle: selected.caseTitle,
+      caseDescription: selected.caseDescription,
+      suspects: selected.suspects,
+      murderer: selected.murderer,
+      trueRules: selected.trueRules.slice(0, trueCount),
+      falseRules: selected.falseRules.slice(0, falseCount),
+      reasoning: selected.reasoning
+    };
+  }
+  
+  // 预设案件不够，尝试 AI
   if (!API_KEY) {
-    console.log('❌ 没有API_KEY，使用默认案件');
+    console.log('❌ 没有API_KEY且预设案件不足，使用默认案件');
     return getDefaultCase();
   }
 
@@ -86,14 +173,10 @@ async function generateCase(playerCount) {
 {"caseTitle":"标题","caseDescription":"描述100字内","suspects":["A","B","C"],"murderer":"凶手名","trueRules":["规则1"...共${trueCount}条],"falseRules":["规则1"...共${falseCount}条],"reasoning":"推理链"}`;
 
   try {
-    console.log('正在调用API...');
-    console.log('开始时间:', new Date().toLocaleTimeString());
+    console.log('正在调用AI...');
     
     const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      console.log('⏰ API超时(' + API_TIMEOUT/1000 + '秒)');
-      controller.abort();
-    }, API_TIMEOUT);
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
 
     const response = await fetch(API_URL, {
       method: 'POST',
@@ -111,33 +194,24 @@ async function generateCase(playerCount) {
     });
 
     clearTimeout(timeout);
-    console.log('API响应状态:', response.status);
-    console.log('结束时间:', new Date().toLocaleTimeString());
+    console.log('AI响应状态:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ API错误:', response.status);
-      console.error('详情:', errorText.substring(0, 300));
+      console.error('AI错误:', response.status, errorText.substring(0, 200));
       return getDefaultCase();
     }
 
     const data = await response.json();
     let content = data.choices[0].message.content;
-    console.log('原始返回长度:', content.length);
-    
     content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     const parsed = JSON.parse(content);
-    console.log('✅ 案件生成成功:', parsed.caseTitle);
-    console.log('凶手:', parsed.murderer);
-    console.log('真规则:', parsed.trueRules?.length, '条 | 假规则:', parsed.falseRules?.length, '条');
+    console.log('✅ AI案件:', parsed.caseTitle);
     return parsed;
     
   } catch (error) {
-    console.error('❌ API异常:', error.message);
-    if (error.name === 'AbortError') {
-      console.error('请求被中止（超时）');
-    }
+    console.error('❌ AI异常:', error.message);
     return getDefaultCase();
   }
 }
@@ -263,7 +337,7 @@ io.on('connection', (socket) => {
     const playerCount = room.players.size;
     console.log(`\n🎮 开始游戏，房间: ${roomId}，玩家数: ${playerCount}`);
     room.phase = 'preparing';
-    io.to(roomId).emit('phaseChange', { phase: 'preparing', message: '正在生成案件...' });
+    io.to(roomId).emit('phaseChange', { phase: 'preparing', message: '正在准备案件...' });
 
     const caseData = await generateCase(playerCount);
     room.caseData = caseData;
