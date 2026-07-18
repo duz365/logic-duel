@@ -55,121 +55,88 @@ function getRuleCounts(playerCount) {
   return { totalRules, trueCount: totalRules - falseCount, falseCount };
 }
 
-const presetCases = [
-  {
-    caseTitle: "博物馆失窃案",
-    caseDescription: "深夜，市博物馆的名画《星空下的猫》被盗。嫌疑人：保安张三、清洁工李四、馆长王五。",
-    suspects: ["保安张三", "清洁工李四", "馆长王五"],
-    murderer: "清洁工李四",
-    trueRules: [
-      "监控显示案发时间有两人进入过展厅","保安张三和馆长王五在案发时间在一起喝酒",
-      "小偷身高不超过175cm","清洁工李四身高170cm","馆长王五身高182cm",
-      "保安张三身高178cm","展厅窗户从内部锁着","清洁工李四有展厅备用钥匙"
-    ],
-    falseRules: ["监控显示案发时间只有一人进入过展厅","清洁工李四案发时已下班"],
-    reasoning: "两人进入展厅，排除单人作案。张三和王五一起喝酒互相作证。小偷≤175cm，王五182cm、张三178cm不符合，李四170cm符合。窗内锁+备用钥匙指向李四。"
-  },
-  {
-    caseTitle: "毒杀晚宴",
-    caseDescription: "富豪王某在晚宴中毒身亡。嫌疑人：王太太、老张、陈医生。",
-    suspects: ["王太太", "老张", "陈医生"],
-    murderer: "王太太",
-    trueRules: [
-      "毒药在红酒中，5分钟发作","王太太案发前10分钟给王某倒酒",
-      "老张案发前3分钟与王某碰杯","陈医生案发前8分钟给王某递药",
-      "毒药遇水变蓝","王某酒杯内壁有蓝色残留",
-      "陈医生的药是胶囊不接触酒杯","老张和王某喝同一瓶酒，老张没事"
-    ],
-    falseRules: ["毒药1分钟内发作","陈医生的药遇水变蓝"],
-    reasoning: "毒5分钟发作+酒杯蓝残留=毒在酒中。陈医生胶囊不接触酒杯，排除。老张同瓶酒没事，排除。王太太倒酒时机吻合10分钟前。"
-  },
-  {
-    caseTitle: "坠楼疑云",
-    caseDescription: "李某从18楼坠亡。嫌疑人：赵总、小周、孙小姐。",
-    suspects: ["赵总", "小周", "孙小姐"],
-    murderer: "赵总",
-    trueRules: [
-      "李某坠楼前收到'来天台'短信","赵总手机案发时给李某发过短信",
-      "天台监控案发当天被人为关闭","孙小姐案发时在医院陪护",
-      "小周和赵总案发后互相指认","李某指甲有赵总DNA",
-      "赵总手腕有新鲜抓痕","李某桌内有举报赵总贪污的信"
-    ],
-    falseRules: ["天台监控当天正常工作","孙小姐案发时出现在公司"],
-    reasoning: "DNA+抓痕=肢体冲突。短信+关监控=预谋。孙小姐有不在场证明。举报信=动机。赵总是凶手。"
-  }
-];
-
-const recentCases = [];
-
-function getRandomPresetCase(trueCount, falseCount) {
-  const suitable = presetCases.filter(c => 
-    c.trueRules.length >= trueCount && 
-    c.falseRules.length >= falseCount &&
-    !recentCases.includes(c.caseTitle)
-  );
-  const pool = suitable.length > 0 ? suitable : presetCases;
-  if (suitable.length === 0) recentCases.length = 0;
-  const selected = pool[Math.floor(Math.random() * pool.length)];
-  recentCases.push(selected.caseTitle);
-  if (recentCases.length > 10) recentCases.shift();
-  return {
-    caseTitle: selected.caseTitle,
-    caseDescription: selected.caseDescription,
-    suspects: selected.suspects,
-    murderer: selected.murderer,
-    trueRules: selected.trueRules.slice(0, trueCount),
-    falseRules: selected.falseRules.slice(0, falseCount),
-    reasoning: selected.reasoning
-  };
-}
-
+// ==================== AI 生成案件（唯一来源） ====================
 async function generateCase(playerCount) {
   const { trueCount, falseCount } = getRuleCounts(playerCount);
-  console.log(`\n===== 生成案件 ===== 玩家:${playerCount} 真:${trueCount} 假:${falseCount}`);
+  console.log(`\n===== AI生成案件 ===== 玩家:${playerCount} 真:${trueCount} 假:${falseCount}`);
   
-  if (API_KEY) {
-    console.log('AI生成中...');
-    const prompt = `生成推理案件。输出纯JSON。
+  if (!API_KEY) {
+    console.log('无API_KEY，使用内置兜底');
+    return getFallbackCase(trueCount, falseCount);
+  }
+
+  const prompt = `生成一个推理案件。输出纯JSON，不要markdown。
 
 硬性要求：
-- 3个嫌疑人，每人至少在规则中出现2次
-- 严格${trueCount}条真规则，${falseCount}条假规则
-- 每条规则≤20字，简洁陈述句
-- 真规则合起来唯一指向凶手，缺一不可
-- 假规则与真规则逻辑矛盾但不是直接否定
-- 不要"监控坏了""不在场证明"套路
+- 3个嫌疑人，每个嫌疑人的名字至少出现在2条规则中
+- 严格输出${trueCount}条真规则，${falseCount}条假规则
+- 每条规则不超过20字，用简洁陈述句
+- 所有真规则合起来必须唯一指向凶手，缺任何一条都无法确定
+- 假规则与真规则形成逻辑矛盾，但不能是直接否定句式
+- 避免"监控坏了""不在场证明"等套路
 
-{"caseTitle":"≤8字","caseDescription":"≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":["规则"...共${trueCount}条],"falseRules":["规则"...共${falseCount}条],"reasoning":"≤80字"}`;
+输出格式：
+{"caseTitle":"≤8字","caseDescription":"≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":["规则"...共${trueCount}条],"falseRules":["规则"...共${falseCount}条],"reasoning":"≤80字推理链"}`;
 
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      console.log(`第${attempt}次尝试...`);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.85, max_tokens: 1500 }),
+        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.9 + attempt * 0.05, max_tokens: 1500 }),
         signal: controller.signal
       });
       clearTimeout(timeout);
+      
       if (response.ok) {
         const data = await response.json();
         let content = data.choices[0].message.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         const p = JSON.parse(content);
         if (p.caseTitle && p.murderer && p.trueRules?.length >= trueCount && p.falseRules?.length >= falseCount) {
-          console.log('✅', p.caseTitle, '| 凶手:', p.murderer);
+          console.log('✅ 成功:', p.caseTitle, '| 凶手:', p.murderer);
           return {
             caseTitle: p.caseTitle, caseDescription: p.caseDescription || '',
-            suspects: p.suspects, murderer: p.murderer,
+            suspects: p.suspects || ['A', 'B', 'C'], murderer: p.murderer,
             trueRules: p.trueRules.slice(0, trueCount),
             falseRules: p.falseRules.slice(0, falseCount),
             reasoning: p.reasoning || ''
           };
         }
+        console.log('数据不完整，重试...');
+      } else {
+        console.log('HTTP错误:', response.status);
       }
-    } catch (e) { console.error('AI异常:', e.message); }
+    } catch (e) {
+      console.error('异常:', e.message);
+    }
   }
-  console.log('使用预设');
-  return getRandomPresetCase(trueCount, falseCount);
+  
+  console.log('3次失败，使用兜底');
+  return getFallbackCase(trueCount, falseCount);
+}
+
+function getFallbackCase(trueCount, falseCount) {
+  const cases = [
+    {
+      caseTitle: "画室命案", caseDescription: "画家在画室被杀。嫌疑人：助手阿明、经纪人红姐、模特小美。",
+      suspects: ["阿明", "红姐", "小美"], murderer: "红姐",
+      trueRules: ["阿明和红姐案发时都在画室","小美案发时在楼下被多人看到","凶器是调色刀","红姐手上有颜料痕迹","阿明和死者当天发生过争吵","小美和死者无过节","调色刀上有红姐指纹","阿明有小美的不在场证明"],
+      falseRules: ["小美案发时无人看到","凶器上没有指纹"],
+      reasoning: "小美有不在场证明排除。阿明和小美互相作证排除。红姐有颜料痕迹+调色刀指纹+在画室=凶手。"
+    },
+    {
+      caseTitle: "密室中毒", caseDescription: "程序员在封闭办公室中毒身亡。嫌疑人：同事大刘、女友小杨、老板郑总。",
+      suspects: ["大刘", "小杨", "郑总"], murderer: "大刘",
+      trueRules: ["毒药在咖啡中，15分钟发作","大刘案发前15分钟给死者递过咖啡","小杨案发时在楼下餐厅","郑总案发时在开会","只有大刘和死者会煮咖啡","小杨有餐厅监控证明","郑总开会时有10人作证","大刘和死者最近因项目有矛盾"],
+      falseRules: ["小杨案发时不在餐厅","毒药1分钟发作"],
+      reasoning: "小杨和郑总都有不在场证明排除。咖啡只有大刘和死者会煮，大刘递咖啡时间与15分钟吻合，且有动机。大刘是凶手。"
+    }
+  ];
+  const c = cases[Math.floor(Math.random() * cases.length)];
+  return { ...c, trueRules: c.trueRules.slice(0, trueCount), falseRules: c.falseRules.slice(0, falseCount) };
 }
 
 function shuffleArray(arr) { const a = [...arr]; for (let i = a.length-1; i>0; i--) { const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; }
@@ -203,43 +170,72 @@ function botSelectStatement(botRules) {
   return botRules[Math.floor(Math.random() * botRules.length)].rule;
 }
 
-const botShortLines = {
-  honest: [
-    "两人进过展厅，排除单人作案。","身高那条很关键。","内部锁窗+钥匙，指向内部人员。",
-    "时间线对不上。","不在场证明互相矛盾。","关键证据指向同一个人。"
-  ],
-  misleading: [
-    "我觉得没那么复杂。","时间线可能有误。","有些规则未必是真的。","方向是不是偏了？"
-  ]
-};
-
-function getBotShortLine(isFalseHolder) {
-  const pool = isFalseHolder ? botShortLines.misleading : botShortLines.honest;
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
-async function generateBotReply(botName, botRules, hasFalse, statements, suspects, caseDescription, playerMessage) {
-  if (!API_KEY) return hasFalse ? "有道理，但未必。" : "同意。";
+// ==================== 人机讨论：角色立场发言 ====================
+async function generateBotDiscussionLine(botName, botRules, hasFalse, statements, suspects, caseDescription) {
+  if (!API_KEY) {
+    return hasFalse ? "我觉得没那么简单，再想想。" : "关键线索已经出现了，仔细看。";
+  }
+  
   const rulesText = botRules.map(r => `(${r.isTrue?'真':'假'})${r.rule}`).join(';');
   const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const prompt = `推理游戏。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。你的规则:${rulesText}。已公开:${statementsText}。${hasFalse?'你有假规则但不知哪条，需误导。':''}玩家说:"${playerMessage}"。回复≤15字，简洁。`;
+  
+  const prompt = `你是"${botName}"，正在玩推理游戏。
+案件：${caseDescription}
+嫌疑人：${suspects.join('、')}
+你的规则：${rulesText}
+已公开：${statementsText}
+${hasFalse ? '你手中有一条假规则（你不知道是哪条）。你的立场是误导他人、保护真凶不被发现。你可以撒谎、歪曲事实、转移话题。但不要直接说"我有假规则"。' : '你手中全是真规则。你的立场是找出真凶。你要分析逻辑矛盾，但不要暴露自己具体有哪条规则。'}
+
+用"${botName}"的口吻发表一句推理发言，≤20字，自然像真人。`;
+
   try {
     const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 5000);
+    const t = setTimeout(() => c.abort(), 8000);
     const r = await fetch(API_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-      body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.8, max_tokens: 40 }),
+      body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.95, max_tokens: 60 }),
       signal: c.signal
     });
     clearTimeout(t);
     const d = await r.json();
     return d.choices[0].message.content.trim();
-  } catch (e) { return hasFalse ? "有道理，但未必。" : "同意。"; }
+  } catch (e) {
+    return hasFalse ? "别想太多，没那么复杂。" : "这条线索很重要。";
+  }
+}
+
+// ==================== 人机回复玩家提问 ====================
+async function generateBotReply(botName, botRules, hasFalse, statements, suspects, caseDescription, playerMessage) {
+  if (!API_KEY) return hasFalse ? "你说的有道理，但未必。" : "同意你的看法。";
+  
+  const rulesText = botRules.map(r => `(${r.isTrue?'真':'假'})${r.rule}`).join(';');
+  const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
+  
+  const prompt = `你是"${botName}"，推理游戏中有人对你说："${playerMessage}"
+案件：${caseDescription}。嫌疑人：${suspects.join('、')}
+你的规则：${rulesText}。已公开：${statementsText}
+${hasFalse ? '你有假规则，立场是误导。你可以撒谎、否认、转移话题。' : '你全是真规则，立场是推理。你要根据线索回应。'}
+回复≤15字，用"${botName}"的口吻。`;
+
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 5000);
+    const r = await fetch(API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.9, max_tokens: 50 }),
+      signal: c.signal
+    });
+    clearTimeout(t);
+    const d = await r.json();
+    return d.choices[0].message.content.trim();
+  } catch (e) {
+    return hasFalse ? "不一定，再想想。" : "我同意。";
+  }
 }
 
 function botMakeAccusation(botRules, players, falseHolderCandidates, suspects) {
   let guessedFalsePlayer;
-  if (Math.random() < 0.55 && falseHolderCandidates.length > 0) {
+  if (Math.random() < 0.5 && falseHolderCandidates.length > 0) {
     guessedFalsePlayer = falseHolderCandidates[Math.floor(Math.random() * falseHolderCandidates.length)];
   } else {
     const others = players.filter(p => p.id !== 'self');
@@ -294,7 +290,7 @@ io.on('connection', (socket) => {
     room.totalPlayers = totalPlayers;
     room.phase = 'preparing';
     room.statementSubmitted = new Set();
-    io.to(roomId).emit('phaseChange', { phase: 'preparing', message: '生成案件...' });
+    io.to(roomId).emit('phaseChange', { phase: 'preparing', message: 'AI生成案件中...' });
     
     const caseData = await generateCase(totalPlayers);
     room.caseData = caseData;
@@ -358,11 +354,13 @@ io.on('connection', (socket) => {
     room.botAssignments.forEach((a) => {
       const count = 1 + Math.floor(Math.random() * 2);
       for (let i = 0; i < count; i++) {
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
           if (room.phase === 'discuss') {
-            io.to(roomId).emit('chatMessage', { from: room.bots.get(a.botId).nickname, message: getBotShortLine(a.hasFalse) });
+            const botInfo = room.bots.get(a.botId);
+            const line = await generateBotDiscussionLine(botInfo.nickname, a.rules, a.hasFalse, room.statements, room.caseData.suspects, room.caseData.caseDescription);
+            io.to(roomId).emit('chatMessage', { from: botInfo.nickname, message: line });
           }
-        }, 8000 + i * 12000 + Math.random() * 6000);
+        }, 8000 + i * 15000 + Math.random() * 8000);
         room.botTimers.push(timer);
       }
     });
