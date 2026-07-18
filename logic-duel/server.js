@@ -15,9 +15,9 @@ app.use(express.json());
 
 const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'Pro/deepseek-ai/DeepSeek-V3.1-Terminus';
+const MODEL = 'Qwen/Qwen2.5-7B-Instruct';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
-const API_TIMEOUT = 15000;
+const API_TIMEOUT = 20000;
 
 console.log('========================================');
 console.log('服务器启动中...');
@@ -37,8 +37,7 @@ function tryMatch() {
       players: new Map(), bots: new Map(), host: player1.socket.id, phase: 'lobby',
       caseData: null, playerAssignments: [], botAssignments: [],
       statements: [], accusations: [], discussReady: new Set(), botTimers: [],
-      totalPlayers: 0, statementSubmitted: new Set(),
-      botMemories: new Map()
+      totalPlayers: 0, statementSubmitted: new Set(), botMemories: new Map()
     });
     const room = rooms.get(roomId);
     room.players.set(player1.socket.id, { nickname: player1.nickname, isBot: false });
@@ -72,22 +71,28 @@ function getRuleCounts(playerCount) {
   return { totalRules, trueCount: totalRules - falseCount, falseCount };
 }
 
-// ==================== AI 生成案件 ====================
+// ==================== AI 生成案件（强化版 + 自我验证） ====================
 async function generateCase(playerCount) {
   const { trueCount, falseCount } = getRuleCounts(playerCount);
   console.log(`\n===== AI生成案件 ===== 玩家:${playerCount} 真:${trueCount} 假:${falseCount}`);
   
   if (!API_KEY) throw new Error('API_KEY未配置');
 
-  const prompt = `生成一个原创推理案件。输出纯JSON。
+  // 第一步：生成案件
+  const genPrompt = `你是逻辑谜题大师。生成一个严谨推理案件。输出纯JSON。
 
-嫌疑人名字随机创造有中文特色（如沈雨薇、韩志远等）。
-${trueCount}条真规则，${falseCount}条假规则。每条≤18字。
-真规则合起来唯一指向凶手。假规则与真规则微妙矛盾。
+核心约束：
+- 嫌疑人3个，中文名随机创造
+- ${trueCount}条真规则，${falseCount}条假规则，每条≤18字
+- 用全部${trueCount}条真规则必须能唯一推出凶手，移除任何一条都无法确定
+- 每条真规则都是必要条件，不能用"排除法"绕过
+- 假规则与真规则形成微妙矛盾，但不是直接否定
+- 案例描述中直接写出嫌疑人名字
 
-输出格式：
-{"caseTitle":"≤8字","caseDescription":"嫌疑人直接写出来，≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":[""...共${trueCount}条],"falseRules":[""...共${falseCount}条],"reasoning":"≤80字"}`;
+{"caseTitle":"≤8字","caseDescription":"嫌疑人XX、YY和ZZ...≤40字","suspects":["名1","名2","名3"],"murderer":"凶手名","trueRules":[""...共${trueCount}条],"falseRules":[""...共${falseCount}条],"reasoning":"用全部真规则逐步推导出凶手的完整逻辑链，≤100字"}`;
 
+  let caseData = null;
+  
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const controller = new AbortController();
@@ -95,7 +100,7 @@ ${trueCount}条真规则，${falseCount}条假规则。每条≤18字。
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.95, max_tokens: 2000 }),
+        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: genPrompt }], temperature: 0.95, max_tokens: 2000 }),
         signal: controller.signal
       });
       clearTimeout(timeout);
@@ -104,8 +109,7 @@ ${trueCount}条真规则，${falseCount}条假规则。每条≤18字。
         let content = data.choices[0].message.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         const p = JSON.parse(content);
         if (p.caseTitle && p.murderer && p.trueRules?.length >= trueCount && p.falseRules?.length >= falseCount && p.suspects?.length === 3) {
-          console.log('✅', p.caseTitle, '| 凶手:', p.murderer);
-          return {
+          caseData = {
             caseTitle: p.caseTitle,
             caseDescription: p.caseDescription || '',
             suspects: p.suspects,
@@ -114,11 +118,60 @@ ${trueCount}条真规则，${falseCount}条假规则。每条≤18字。
             falseRules: p.falseRules.slice(0, falseCount),
             reasoning: p.reasoning || ''
           };
+          break;
         }
       }
     } catch (e) {}
   }
-  throw new Error('AI案件生成失败');
+
+  if (!caseData) throw new Error('AI案件生成失败');
+
+  // 第二步：自我验证
+  console.log('自我验证中...');
+  const verifyPrompt = `验证以下推理案件是否严谨。案件：
+嫌疑人：${caseData.suspects.join('、')}
+凶手：${caseData.murderer}
+真规则：${caseData.trueRules.map((r,i)=>(i+1)+'.'+r).join('；')}
+
+请回答：
+1. 用全部${trueCount}条真规则能否唯一推出凶手是"${caseData.murderer}"？
+2. 如果移除任意一条真规则，是否还能确定凶手？
+3. 如果第1问为"是"且第2问为"否"，回复"验证通过"。否则指出问题。
+
+只回复："验证通过" 或 指出具体问题。`;
+
+  let verified = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: verifyPrompt }], temperature: 0.1, max_tokens: 100 }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (response.ok) {
+        const data = await response.json();
+        const result = data.choices[0].message.content.trim();
+        if (result.includes('验证通过')) {
+          verified = true;
+          console.log('✅ 验证通过');
+          break;
+        } else {
+          console.log('验证未通过:', result);
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (!verified) {
+    console.log('验证失败，重新生成...');
+    return await generateCase(playerCount); // 递归重试
+  }
+
+  return caseData;
 }
 
 function shuffleArray(arr) { const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
@@ -143,80 +196,57 @@ function cleanBotReply(reply, hasFalse) {
   return reply;
 }
 
-// ==================== AI压缩消息用于记忆 ====================
 async function compressForMemory(text) {
   if (!API_KEY) return text.substring(0, 30);
   try {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 3000);
-    const r = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-      body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: `摘要这句话到15字以内："${text}"` }], temperature: 0.1, max_tokens: 30 }),
-      signal: c.signal
-    });
-    clearTimeout(t);
-    const d = await r.json();
+    const c = new AbortController(); const t = setTimeout(() => c.abort(), 3000);
+    const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:MODEL, messages:[{role:'user',content:`摘要到15字："${text}"`}], temperature:0.1, max_tokens:30 }), signal:c.signal });
+    clearTimeout(t); const d = await r.json();
     return d.choices[0].message.content.trim() || text.substring(0, 20);
-  } catch (e) {
-    return text.substring(0, 20);
-  }
+  } catch (e) { return text.substring(0, 20); }
 }
 
 // ==================== 人机讨论发言 ====================
 async function generateBotDiscussionLine(botName, botRules, hasFalse, statements, suspects, caseDescription, memory) {
   if (!API_KEY) return hasFalse ? "我觉得没那么简单。" : "关键线索出现了。";
-  const mr = botRules.map(r => `(${r.isTrue?'真':'假'})${r.rule}`).join(';');
+  const myTrueRules = botRules.filter(r=>r.isTrue).map(r=>r.rule);
+  const myFalseRule = botRules.find(r=>!r.isTrue);
   const st = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const wc = hasFalse ? "误导大家，可以撒谎但不能被发现。" : "找出真相，分析矛盾。";
-  const memText = memory && memory.length > 0 ? `历史摘要:${memory.join(';')}` : '';
-  const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。规则:${mr}。公开:${st}。${memText}${wc}纯中文发言≤20字。`;
+  const wc = hasFalse ? "你是扰乱者。可以撒谎但不能被识破。不能和已公开的任何规则矛盾，也不能和你自己的真规则矛盾。" : "你是推理者。分析矛盾帮大家。";
+  const memText = memory?.length > 0 ? `历史:${memory.join(';')}` : '';
+  const myRuleInfo = hasFalse ? `你的真规则:${myTrueRules.join(';')}。你的假规则:${myFalseRule?.rule||''}。` : `你的规则:${myTrueRules.join(';')}。`;
+  const prompt = `"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。${myRuleInfo}公开:${st}。${memText}${wc}纯中文发言≤20字。`;
 
-  for (let a = 0; a < 3; a++) {
-    try {
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 10000);
-      const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:MODEL, messages:[{role:'user',content:prompt}], temperature:0.95, max_tokens:60 }), signal:c.signal });
-      clearTimeout(t); const d = await r.json();
-      let line = d.choices[0].message.content.trim();
-      line = cleanBotReply(line, hasFalse);
-      if (line && line.length >= 3) return line;
-    } catch (e) {}
-  }
-  return hasFalse ? "别想太多。" : "这条线索重要。";
+  for (let a=0;a<3;a++){try{const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`},body:JSON.stringify({model:MODEL,messages:[{role:'user',content:prompt}],temperature:0.95,max_tokens:60}),signal:c.signal});clearTimeout(t);const d=await r.json();let line=d.choices[0].message.content.trim();line=cleanBotReply(line,hasFalse);if(line&&line.length>=3)return line;}catch(e){}}
+  return hasFalse?"别想太多。":"这条线索重要。";
 }
 
-// ==================== 人机回复玩家（带记忆和立场） ====================
+// ==================== 人机回复玩家 ====================
 async function generateBotReply(botName, botRules, hasFalse, statements, suspects, caseDescription, playerMessage, memory) {
   if (!API_KEY) return hasFalse ? "我不太确定。" : "线索指向很明显。";
-  const ar = botRules.map(r => r.rule);
-  const ur = ar.filter(r => !statements.some(s => s.rule === r));
-  const st = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
+  const myTrueRules = botRules.filter(r=>r.isTrue).map(r=>r.rule);
+  const myFalseRule = botRules.find(r=>!r.isTrue);
+  const ar = botRules.map(r=>r.rule);
+  const ur = ar.filter(r=>!statements.some(s=>s.rule===r));
+  const st = statements.map(s=>`${s.nickname}:"${s.rule}"`).join(';');
   const ia = /规则|线索|另一条|还有什么|告诉我|你知道|你掌握|你的/.test(playerMessage);
   
   let ri = '';
   if (ia && ur.length > 0) {
     if (hasFalse) {
-      ri = `你是扰乱者，可以撒谎但不能被识破。你未公开的规则是："${ur.join('"、"')}"。如果有人问你另一条规则，编造一条听起来合理的，不能和已公开规则矛盾。`;
+      ri = `你是扰乱者。你的真规则:${myTrueRules.join(';')}。假规则:${myFalseRule?.rule||''}。如果被问未公开规则，可以撒谎编造，但不能和已公开规则矛盾，也不能和你的真规则矛盾。`;
     } else {
-      ri = `你是推理者，必须诚实。你未公开的规则是："${ur.join('"、"')}"。如果有人问你，如实回答。`;
+      ri = `你是推理者，必须诚实。未公开规则:"${ur.join('"、"')}"。被问就如实说出。`;
     }
   }
-  const wc = hasFalse ? "扰乱者。撒谎不被发现。" : "推理者。诚实回答。";
-  const memText = memory && memory.length > 0 ? `历史:${memory.join(';')}` : '';
-  const prompt = `"${botName}"。案件:${caseDescription}。公开:${st}。未公开:${ur.join(';')}。${ri}${wc}${memText}有人说:"${playerMessage}"。纯中文回复15-25字。`;
+  const wc = hasFalse ? "扰乱者。撒谎不被发现。不能和自己真规则或已公开规则矛盾。" : "推理者。诚实回答。";
+  const memText = memory?.length > 0 ? `历史:${memory.join(';')}` : '';
+  const myRuleInfo = hasFalse ? `真规则:${myTrueRules.join(';')}。假规则:${myFalseRule?.rule||''}。` : `规则:${myTrueRules.join(';')}。`;
+  const prompt = `"${botName}"。${myRuleInfo}未公开:${ur.join(';')}。公开:${st}。${ri}${wc}${memText}有人说:"${playerMessage}"。纯中文回复15-25字。`;
 
-  for (let a = 0; a < 3; a++) {
-    try {
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 8000);
-      const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:MODEL, messages:[{role:'user',content:prompt}], temperature:0.7, max_tokens:80 }), signal:c.signal });
-      clearTimeout(t); const d = await r.json();
-      let reply = d.choices[0].message.content.trim();
-      reply = cleanBotReply(reply, hasFalse);
-      if (reply && reply.length >= 3) return reply;
-    } catch (e) {}
-  }
-  if (ia && ur.length > 0 && !hasFalse) return ur[Math.floor(Math.random()*ur.length)];
-  return hasFalse ? "我记不太清了。" : "线索指向很明显。";
+  for (let a=0;a<3;a++){try{const c=new AbortController();const t=setTimeout(()=>c.abort(),8000);const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`},body:JSON.stringify({model:MODEL,messages:[{role:'user',content:prompt}],temperature:0.7,max_tokens:80}),signal:c.signal});clearTimeout(t);const d=await r.json();let reply=d.choices[0].message.content.trim();reply=cleanBotReply(reply,hasFalse);if(reply&&reply.length>=3)return reply;}catch(e){}}
+  if(ia&&ur.length>0&&!hasFalse)return ur[Math.floor(Math.random()*ur.length)];
+  return hasFalse?"我记不太清了。":"线索指向很明显。";
 }
 
 function botMakeAccusation(botRules,players,falseHolderCandidates,suspects,hasFalse){const fc=Math.max(1,falseHolderCandidates.length);let g=[];if(hasFalse){const w=players.filter(p=>!falseHolderCandidates.includes(p.id));for(let i=0;i<fc;i++){if(w.length>0)g.push(w.splice(Math.floor(Math.random()*w.length),1)[0].id);}}else{const c=[...falseHolderCandidates];for(let i=0;i<fc;i++){if(c.length>0&&Math.random()<0.6)g.push(c.splice(Math.floor(Math.random()*c.length),1)[0]);else{const o=players.filter(p=>!g.includes(p.id));if(o.length>0)g.push(o[Math.floor(Math.random()*o.length)].id);}}}return{falsePlayerIds:[...new Set(g)].slice(0,fc),murdererGuess:suspects[Math.floor(Math.random()*suspects.length)]};}
@@ -233,7 +263,7 @@ io.on('connection',(socket)=>{
   socket.on('addBots',({roomId,count})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;for(let i=0;i<count;i++)room.bots.set(generateBotId(),{nickname:getBotName(room.bots.size+i),isBot:true});io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
   socket.on('removeBots',({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;room.bots.clear();room.botMemories.clear();io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
 
-  socket.on('startGame',async({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id)return;const tp=room.players.size+room.bots.size;if(tp<2){socket.emit('errorMessage','至少2人');return;}room.totalPlayers=tp;room.phase='preparing';room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'preparing',message:'AI生成案件中...'});try{room.caseData=await generateCase(tp);}catch(e){socket.emit('errorMessage','案件生成失败，请重试');room.phase='lobby';return;}const{falseCount}=getRuleCounts(tp);const as=assignRules(room.caseData.trueRules,room.caseData.falseRules,tp);const pids=Array.from(room.players.keys());room.playerAssignments=[];for(let i=0;i<pids.length;i++)room.playerAssignments.push({playerId:pids[i],rules:as[i].playerRules,hasFalse:as[i].hasFalse});const bids=Array.from(room.bots.keys());room.botAssignments=[];for(let i=0;i<bids.length;i++)room.botAssignments.push({botId:bids[i],rules:as[pids.length+i].playerRules,hasFalse:as[pids.length+i].hasFalse});room.botMemories.clear();bids.forEach(bid=>room.botMemories.set(bid,[]));room.phase='reading';room.statements=[];room.accusations=[];room.discussReady=new Set();io.to(roomId).emit('phaseChange',{phase:'reading',message:'查看规则',totalPlayers:tp,falseCount});for(const a of room.playerAssignments){const ps=io.sockets.sockets.get(a.playerId);if(ps)ps.emit('yourRules',{rules:a.rules,hasFalseRule:a.hasFalse,caseTitle:room.caseData.caseTitle,caseDescription:room.caseData.caseDescription,suspects:room.caseData.suspects});}room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='reading'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:tp});if(room.discussReady.size===tp){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:tp,falseCount});startBotStatements(room,roomId);}}},2000+Math.random()*3000);room.botTimers.push(timer);});});
+  socket.on('startGame',async({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id)return;const tp=room.players.size+room.bots.size;if(tp<2){socket.emit('errorMessage','至少2人');return;}room.totalPlayers=tp;room.phase='preparing';room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'preparing',message:'AI生成并验证案件中...'});try{room.caseData=await generateCase(tp);}catch(e){socket.emit('errorMessage','案件生成失败，请重试');room.phase='lobby';return;}const{falseCount}=getRuleCounts(tp);const as=assignRules(room.caseData.trueRules,room.caseData.falseRules,tp);const pids=Array.from(room.players.keys());room.playerAssignments=[];for(let i=0;i<pids.length;i++)room.playerAssignments.push({playerId:pids[i],rules:as[i].playerRules,hasFalse:as[i].hasFalse});const bids=Array.from(room.bots.keys());room.botAssignments=[];for(let i=0;i<bids.length;i++)room.botAssignments.push({botId:bids[i],rules:as[pids.length+i].playerRules,hasFalse:as[pids.length+i].hasFalse});room.botMemories.clear();bids.forEach(bid=>room.botMemories.set(bid,[]));room.phase='reading';room.statements=[];room.accusations=[];room.discussReady=new Set();io.to(roomId).emit('phaseChange',{phase:'reading',message:'查看规则',totalPlayers:tp,falseCount});for(const a of room.playerAssignments){const ps=io.sockets.sockets.get(a.playerId);if(ps)ps.emit('yourRules',{rules:a.rules,hasFalseRule:a.hasFalse,caseTitle:room.caseData.caseTitle,caseDescription:room.caseData.caseDescription,suspects:room.caseData.suspects});}room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='reading'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:tp});if(room.discussReady.size===tp){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:tp,falseCount});startBotStatements(room,roomId);}}},2000+Math.random()*3000);room.botTimers.push(timer);});});
 
   function startBotStatements(room,roomId){room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='statement'){const rule=botSelectStatement(a.rules);room.statements.push({playerId:a.botId,nickname:room.bots.get(a.botId).nickname,rule});room.statementSubmitted.add(a.botId);io.to(roomId).emit('statementSubmitProgress',{submitted:room.statementSubmitted.size,total:room.totalPlayers});if(room.statementSubmitted.size===room.totalPlayers)revealStatements(room,roomId);}},3000+Math.random()*4000);room.botTimers.push(timer);});}
   function revealStatements(room,roomId){io.to(roomId).emit('statementsRevealed',room.statements);setTimeout(()=>{room.phase='discuss';room.discussReady.clear();io.to(roomId).emit('phaseChange',{phase:'discuss',message:'讨论',statements:room.statements,suspectList:room.caseData.suspects,totalPlayers:room.totalPlayers,falseCount:getRuleCounts(room.totalPlayers).falseCount});startBotDiscussion(room,roomId);setTimeout(()=>{if(room.phase==='discuss')io.to(roomId).emit('discussTimeout');},MAX_DISCUSS_TIME);},2000);}
@@ -243,7 +273,7 @@ io.on('connection',(socket)=>{
   function startBotReadyToAccusation(room,roomId){room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='discuss'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:room.totalPlayers});if(room.discussReady.size===room.totalPlayers)startAccusationPhase(room,roomId);}},3000+Math.random()*5000);room.botTimers.push(timer);});}
   function clearBotTimers(room){room.botTimers.forEach(t=>clearTimeout(t));room.botTimers=[];}
 
-  socket.on('chatMessage',({roomId,message})=>{const room=rooms.get(roomId);if(!room||room.phase!=='discuss')return;const player=room.players.get(socket.id);if(!player)return;io.to(roomId).emit('chatMessage',{from:player.nickname,message});room.bots.forEach(async(bi,bid)=>{if(message.includes(bi.nickname)){const ba=room.botAssignments.find(a=>a.botId===bid);if(!ba)return;setTimeout(async()=>{if(room.phase==='discuss'){const mem=room.botMemories.get(bid)||[];const reply=await generateBotReply(bi.nickname,ba.rules,ba.hasFalse,room.statements,room.caseData.suspects,room.caseData.caseDescription,message,mem);io.to(roomId).emit('chatMessage',{from:bi.nickname,message:reply});const compressedMsg=await compressForMemory(`玩家:${message}`);const compressedReply=await compressForMemory(reply);mem.push(compressedMsg,compressedReply);if(mem.length>10)mem.splice(0,2);}},2000+Math.random()*3000);}});});
+  socket.on('chatMessage',({roomId,message})=>{const room=rooms.get(roomId);if(!room||room.phase!=='discuss')return;const player=room.players.get(socket.id);if(!player)return;io.to(roomId).emit('chatMessage',{from:player.nickname,message});room.bots.forEach(async(bi,bid)=>{if(message.includes(bi.nickname)){const ba=room.botAssignments.find(a=>a.botId===bid);if(!ba)return;setTimeout(async()=>{if(room.phase==='discuss'){const mem=room.botMemories.get(bid)||[];const reply=await generateBotReply(bi.nickname,ba.rules,ba.hasFalse,room.statements,room.caseData.suspects,room.caseData.caseDescription,message,mem);io.to(roomId).emit('chatMessage',{from:bi.nickname,message:reply});const cm=await compressForMemory(`玩家:${message}`);const cr=await compressForMemory(reply);mem.push(cm,cr);if(mem.length>10)mem.splice(0,2);}},2000+Math.random()*3000);}});});
 
   socket.on('readyToStatement',({roomId})=>{const room=rooms.get(roomId);if(!room||room.phase!=='reading')return;room.discussReady.add(socket.id);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:room.totalPlayers});if(room.discussReady.size===room.totalPlayers){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:room.totalPlayers,falseCount:getRuleCounts(room.totalPlayers).falseCount});startBotStatements(room,roomId);}});
   socket.on('submitStatement',({roomId,rule})=>{const room=rooms.get(roomId);if(!room||room.phase!=='statement')return;const player=room.players.get(socket.id);if(!player)return;room.statements.push({playerId:socket.id,nickname:player.nickname,rule});room.statementSubmitted.add(socket.id);io.to(roomId).emit('statementSubmitProgress',{submitted:room.statementSubmitted.size,total:room.totalPlayers});if(room.statementSubmitted.size===room.totalPlayers)revealStatements(room,roomId);});
