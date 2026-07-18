@@ -26,14 +26,34 @@ console.log('模型:', MODEL);
 console.log('========================================');
 
 const rooms = new Map();
+const matchQueue = [];
 
-function generateRoomId() {
-  return Math.random().toString(36).substring(2, 6).toUpperCase();
+function tryMatch() {
+  if (matchQueue.length >= 2) {
+    const player1 = matchQueue.shift();
+    const player2 = matchQueue.shift();
+    const roomId = generateRoomId();
+    rooms.set(roomId, {
+      players: new Map(), bots: new Map(), host: player1.socket.id, phase: 'lobby',
+      caseData: null, playerAssignments: [], botAssignments: [],
+      statements: [], accusations: [], discussReady: new Set(), botTimers: [],
+      totalPlayers: 0, statementSubmitted: new Set()
+    });
+    const room = rooms.get(roomId);
+    room.players.set(player1.socket.id, { nickname: player1.nickname, isBot: false });
+    player1.socket.join(roomId);
+    player1.socket.emit('matchSuccess', { roomId, playerId: player1.socket.id, players: getPlayersList(room), phase: 'lobby', isHost: true, message: '匹配成功！你是房主。' });
+    room.players.set(player2.socket.id, { nickname: player2.nickname, isBot: false });
+    player2.socket.join(roomId);
+    player2.socket.emit('matchSuccess', { roomId, playerId: player2.socket.id, players: getPlayersList(room), phase: 'lobby', isHost: false, message: '匹配成功！等待房主开始。' });
+    io.to(roomId).emit('playerListUpdate', getPlayersList(room));
+    console.log(`匹配: ${player1.nickname} & ${player2.nickname} → ${roomId}`);
+    if (matchQueue.length >= 2) tryMatch();
+  }
 }
 
-function generateBotId() {
-  return 'bot_' + Math.random().toString(36).substring(2, 8);
-}
+function generateRoomId() { return Math.random().toString(36).substring(2, 6).toUpperCase(); }
+function generateBotId() { return 'bot_' + Math.random().toString(36).substring(2, 8); }
 
 function getPlayersList(room) {
   const list = [];
@@ -51,552 +71,131 @@ function getRuleCounts(playerCount) {
   return { totalRules, trueCount: totalRules - falseCount, falseCount };
 }
 
-// ==================== AI 生成案件 ====================
 async function generateCase(playerCount) {
   const { trueCount, falseCount } = getRuleCounts(playerCount);
   console.log(`\n===== AI生成案件 ===== 玩家:${playerCount} 真:${trueCount} 假:${falseCount}`);
   if (!API_KEY) throw new Error('API_KEY未配置');
-
-  const prompt = `生成一个原创推理案件。输出纯JSON。
-
-硬性要求：
-- 3个嫌疑人，名字由你随机创造，必须有中文特色且不重复
-- 禁止使用以下名字或变体：张三、李四、王五、赵六、小明、小红、小刚、小美、阿强、老王、老张、老李
-- 凶手必须是这3个嫌疑人之一，从suspects数组中直接选
-- 每个嫌疑人名字必须在至少2条规则中出现
-- 严格${trueCount}条真规则，${falseCount}条假规则
-- 每条规则≤18字，简洁有力
-- 真规则合起来唯一指向凶手，缺一不可
-- 假规则要与真规则形成微妙矛盾，但不能是直接否定句
-- 推理链要严谨，每一步都有依据
-
-{"caseTitle":"≤8字","caseDescription":"≤35字","suspects":["随机名1","随机名2","随机名3"],"murderer":"必须是suspects中的一个","trueRules":["规则"...共${trueCount}条],"falseRules":["规则"...共${falseCount}条],"reasoning":"≤80字严谨推理链"}`;
-
+  const prompt = `生成原创推理案件。输出纯JSON。嫌疑人名字随机创造，有中文特色。禁止用张三李四王五等。凶手是suspects之一。每个嫌疑人至少在2条规则中出现。严格${trueCount}条真规则，${falseCount}条假规则。每条≤18字。真规则合起来唯一指向凶手。假规则与真规则微妙矛盾不直接否定。{"caseTitle":"≤8字","caseDescription":"≤35字","suspects":["名1","名2","名3"],"murderer":"suspects中一个","trueRules":[""...共${trueCount}条],"falseRules":[""...共${falseCount}条],"reasoning":"≤80字"}`;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: prompt }], temperature: 0.95, max_tokens: 2000 }),
-        signal: controller.signal
-      });
+      const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
+      const response = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:MODEL, messages:[{role:'user',content:prompt}], temperature:0.95, max_tokens:2000 }), signal:controller.signal });
       clearTimeout(timeout);
       if (response.ok) {
-        const data = await response.json();
-        let content = data.choices[0].message.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const data = await response.json(); let content = data.choices[0].message.content.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
         const p = JSON.parse(content);
-        if (p.caseTitle && p.murderer && p.trueRules?.length >= trueCount && p.falseRules?.length >= falseCount && p.suspects?.length === 3) {
+        if (p.caseTitle && p.murderer && p.trueRules?.length>=trueCount && p.falseRules?.length>=falseCount && p.suspects?.length===3) {
           console.log('✅', p.caseTitle, '| 凶手:', p.murderer);
-          return {
-            caseTitle: p.caseTitle,
-            caseDescription: p.caseDescription || '',
-            suspects: p.suspects,
-            murderer: p.murderer,
-            trueRules: p.trueRules.slice(0, trueCount),
-            falseRules: p.falseRules.slice(0, falseCount),
-            reasoning: p.reasoning || ''
-          };
+          return { caseTitle:p.caseTitle, caseDescription:p.caseDescription||'', suspects:p.suspects, murderer:p.murderer, trueRules:p.trueRules.slice(0,trueCount), falseRules:p.falseRules.slice(0,falseCount), reasoning:p.reasoning||'' };
         }
-        console.log('数据不完整，重试...');
       }
-    } catch (e) { console.error('尝试失败:', e.message); }
+    } catch (e) {}
   }
   throw new Error('AI案件生成失败');
 }
 
-function shuffleArray(arr) { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function shuffleArray(arr) { const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
 function assignRules(trueRules, falseRules, totalPlayers) {
-  const shuffledTrue = shuffleArray(trueRules), shuffledFalse = shuffleArray(falseRules);
-  const falseHolderIndices = shuffleArray([...Array(totalPlayers).keys()]).slice(0, shuffledFalse.length);
-  const assignments = []; let trueIndex = 0, falseIndex = 0;
-  for (let i = 0; i < totalPlayers; i++) {
-    const playerRules = [];
-    if (falseHolderIndices.includes(i) && falseIndex < shuffledFalse.length) {
-      playerRules.push({ rule: shuffledFalse[falseIndex], isTrue: false }); falseIndex++;
-      playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true }); trueIndex++;
-    } else {
-      playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true }); trueIndex++;
-      playerRules.push({ rule: shuffledTrue[trueIndex], isTrue: true }); trueIndex++;
-    }
-    assignments.push({ playerIndex: i, playerRules, hasFalse: falseHolderIndices.includes(i) });
-  }
+  const shuffledTrue=shuffleArray(trueRules), shuffledFalse=shuffleArray(falseRules);
+  const falseHolderIndices=shuffleArray([...Array(totalPlayers).keys()]).slice(0,shuffledFalse.length);
+  const assignments=[]; let trueIndex=0, falseIndex=0;
+  for(let i=0;i<totalPlayers;i++){const playerRules=[];if(falseHolderIndices.includes(i)&&falseIndex<shuffledFalse.length){playerRules.push({rule:shuffledFalse[falseIndex],isTrue:false});falseIndex++;playerRules.push({rule:shuffledTrue[trueIndex],isTrue:true});trueIndex++;}else{playerRules.push({rule:shuffledTrue[trueIndex],isTrue:true});trueIndex++;playerRules.push({rule:shuffledTrue[trueIndex],isTrue:true});trueIndex++;}assignments.push({playerIndex:i,playerRules,hasFalse:falseHolderIndices.includes(i)});}
   return assignments;
 }
 
-function getBotName(index) {
-  const names = ['侦探小王', '推理达人', '逻辑怪', '福尔摩斯猫', '机智老张', '观察者小李'];
-  return names[index % names.length];
-}
+function getBotName(index) { const names=['侦探小王','推理达人','逻辑怪','福尔摩斯猫','机智老张','观察者小李']; return names[index%names.length]; }
+function botSelectStatement(botRules) { const trueRules=botRules.filter(r=>r.isTrue); if(trueRules.length>0)return trueRules[Math.floor(Math.random()*trueRules.length)].rule; return botRules[Math.floor(Math.random()*botRules.length)].rule; }
 
-function botSelectStatement(botRules) {
-  const trueRules = botRules.filter(r => r.isTrue);
-  if (trueRules.length > 0) return trueRules[Math.floor(Math.random() * trueRules.length)].rule;
-  return botRules[Math.floor(Math.random() * botRules.length)].rule;
-}
-
-// ==================== 强力清理AI回复 ====================
 function cleanBotReply(reply, hasFalse) {
-  if (!reply) return '';
-  reply = reply.replace(/["'""''「」『』]/g, '').trim();
-  const chineseChars = (reply.match(/[\u4e00-\u9fa5]/g) || []).length;
-  const letterChars = (reply.match(/[a-zA-Z]/g) || []).length;
-  const totalChars = reply.length;
-  if (letterChars > totalChars * 0.3 || chineseChars < 3) {
-    const fallbacks = hasFalse
-      ? ["我记不太清了。", "那不重要吧。", "别纠结细节了。", "大概就那样吧。"]
-      : ["线索指向很明显。", "让我再想想看。", "关键证据已经有了。", "我觉得差不多了。"];
-    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
-  }
-  reply = reply.replace(/\b[a-zA-Z]+\b/g, '').replace(/\s+/g, ' ').trim();
-  if (reply.length < 3 || !/[\u4e00-\u9fa5]/.test(reply)) {
-    const fallbacks = hasFalse ? ["我记不太清了。", "那不重要吧。"] : ["线索指向很明显。", "让我再想想。"];
-    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
-  }
+  if(!reply)return''; reply=reply.replace(/["'""''「」『』]/g,'').trim();
+  const cc=(reply.match(/[\u4e00-\u9fa5]/g)||[]).length, lc=(reply.match(/[a-zA-Z]/g)||[]).length;
+  if(lc>reply.length*0.3||cc<3){const f=hasFalse?["我记不太清了。","那不重要吧。"]:["线索指向很明显。","让我再想想。"];return f[Math.floor(Math.random()*f.length)];}
+  reply=reply.replace(/\b[a-zA-Z]+\b/g,'').replace(/\s+/g,' ').trim();
+  if(reply.length<3||!/[\u4e00-\u9fa5]/.test(reply)){const f=hasFalse?["我记不太清了。","那不重要吧。"]:["线索指向很明显。","让我再想想。"];return f[Math.floor(Math.random()*f.length)];}
   return reply;
 }
 
-function manualCompress(text) {
-  if (!text) return '';
-  text = text.replace(/["'""'']/g, '').replace(/\s+/g, ' ').trim();
-  const ps = ['。', '！', '？', '，', '；', '、', '：'];
-  for (const p of ps) { const i = text.indexOf(p); if (i > 4 && i <= 22) return text.substring(0, i + 1); }
-  if (text.length > 20) { const s = text.substring(0, 20); const l = s.lastIndexOf(' '); return l > 4 ? s.substring(0, l) : s; }
-  return text;
-}
+function manualCompress(text){if(!text)return'';text=text.replace(/["'""'']/g,'').replace(/\s+/g,' ').trim();const ps=['。','！','？','，','；','、','：'];for(const p of ps){const i=text.indexOf(p);if(i>4&&i<=22)return text.substring(0,i+1);}if(text.length>20){const s=text.substring(0,20);const l=s.lastIndexOf(' ');return l>4?s.substring(0,l):s;}return text;}
 
-async function compressReply(longReply, botName) {
-  if (!API_KEY) return manualCompress(longReply);
-  const prompt = `精简下面这句话到20字以内，保留核心意思。只输出精简后的中文句子。\n"${longReply}"`;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 5000);
-      const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` }, body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: 40 }), signal: c.signal });
-      clearTimeout(t); const d = await r.json();
-      let compressed = d.choices[0].message.content.trim();
-      compressed = cleanBotReply(compressed, false);
-      if (compressed && compressed.length >= 3 && compressed.length <= 25 && /[\u4e00-\u9fa5]/.test(compressed)) return compressed;
-      if (compressed.length > 25) return await compressReply(compressed, botName);
-    } catch (e) { }
-  }
-  return manualCompress(longReply);
-}
+async function compressReply(longReply,botName){if(!API_KEY)return manualCompress(longReply);const prompt=`精简到20字以内。\n"${longReply}"`;for(let a=0;a<5;a++){try{const c=new AbortController();const t=setTimeout(()=>c.abort(),5000);const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`},body:JSON.stringify({model:'Qwen/Qwen2.5-7B-Instruct',messages:[{role:'user',content:prompt}],temperature:0.2,max_tokens:40}),signal:c.signal});clearTimeout(t);const d=await r.json();let compressed=d.choices[0].message.content.trim();compressed=cleanBotReply(compressed,false);if(compressed&&compressed.length>=3&&compressed.length<=25)return compressed;if(compressed.length>25)return await compressReply(compressed,botName);}catch(e){}}return manualCompress(longReply);}
 
-// ==================== 人机讨论发言 ====================
-async function generateBotDiscussionLine(botName, botRules, hasFalse, statements, suspects, caseDescription) {
-  if (!API_KEY) return hasFalse ? "我觉得没那么简单。" : "关键线索出现了。";
-  const myRulesText = botRules.map(r => `(${r.isTrue ? '真' : '假'})${r.rule}`).join(';');
-  const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const winCondition = hasFalse ? "你的目标：误导大家。可以撒谎、歪曲事实。" : "你的目标：找出真相。分析逻辑矛盾。";
-  const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。规则:${myRulesText}。公开:${statementsText}。${winCondition}用纯中文发表一句推理，≤20字。不要有任何英文。`;
+async function generateBotDiscussionLine(botName,botRules,hasFalse,statements,suspects,caseDescription){if(!API_KEY)return hasFalse?"我觉得没那么简单。":"关键线索出现了。";const mr=botRules.map(r=>`(${r.isTrue?'真':'假'})${r.rule}`).join(';');const st=statements.map(s=>`${s.nickname}:"${s.rule}"`).join(';');const wc=hasFalse?"误导大家，可以撒谎。":"找出真相，分析矛盾。";const prompt=`你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。规则:${mr}。公开:${st}。${wc}纯中文发言≤20字。`;for(let a=0;a<3;a++){try{const c=new AbortController();const t=setTimeout(()=>c.abort(),10000);const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`},body:JSON.stringify({model:'Qwen/Qwen2.5-7B-Instruct',messages:[{role:'user',content:prompt}],temperature:0.95,max_tokens:60}),signal:c.signal});clearTimeout(t);const d=await r.json();let line=d.choices[0].message.content.trim();line=cleanBotReply(line,hasFalse);if(line&&line.length>=3){if(line.length>25)line=await compressReply(line,botName);return line;}}catch(e){}}return hasFalse?"别想太多。":"这条线索重要。";}
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 10000);
-      const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` }, body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.95, max_tokens: 60 }), signal: c.signal });
-      clearTimeout(t); const d = await r.json();
-      let line = d.choices[0].message.content.trim();
-      line = cleanBotReply(line, hasFalse);
-      if (line && line.length >= 3 && /[\u4e00-\u9fa5]/.test(line)) {
-        if (line.length > 25) line = await compressReply(line, botName);
-        return line;
-      }
-    } catch (e) { }
-  }
-  return hasFalse ? "别想太多。" : "这条线索重要。";
-}
+async function generateBotReply(botName,botRules,hasFalse,statements,suspects,caseDescription,playerMessage){if(!API_KEY){const l=hasFalse?["我不太确定。","我记不太清了。"]:["线索指向很明显。","关键证据已经有了。"];return l[Math.floor(Math.random()*l.length)];}const ar=botRules.map(r=>r.rule);const ur=ar.filter(r=>!statements.some(s=>s.rule===r));const st=statements.map(s=>`${s.nickname}:"${s.rule}"`).join(';');const ia=/规则|线索|另一条|还有什么|告诉我|你知道|你掌握|你的/.test(playerMessage);let ri='';if(ia&&ur.length>0){if(hasFalse){const fo=[`"${suspects[Math.floor(Math.random()*suspects.length)]}在案发时有不在场证明"`,`"现场没有找到任何可疑物品"`,`"监控显示一切正常"`,`"死者没有挣扎痕迹"`];ri=`你是扰乱者，可以撒谎。比如：${fo[Math.floor(Math.random()*fo.length)]}。`;}else{const rr=ur[Math.floor(Math.random()*ur.length)];ri=`你是推理者，必须诚实。未公开:"${ur.join('"、"')}"。如实说出，比如："${rr}"。`;}}const wc=hasFalse?"扰乱者。误导，可撒谎。":"推理者。诚实，帮推理。";const prompt=`"${botName}"。案件:${caseDescription}。公开:${st}。未公开:${ur.join(';')||'无'}。${ri}${wc}有人说:"${playerMessage}"。纯中文回复15-25字。`;for(let a=0;a<3;a++){try{const c=new AbortController();const t=setTimeout(()=>c.abort(),8000);const r=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`},body:JSON.stringify({model:'Qwen/Qwen2.5-7B-Instruct',messages:[{role:'user',content:prompt}],temperature:0.7,max_tokens:80}),signal:c.signal});clearTimeout(t);const d=await r.json();let reply=d.choices[0].message.content.trim();reply=cleanBotReply(reply,hasFalse);if(reply&&reply.length>=3){if(reply.length>30)reply=await compressReply(reply,botName);return reply;}}catch(e){}}if(ia&&ur.length>0&&!hasFalse)return ur[Math.floor(Math.random()*ur.length)];return hasFalse?"我记不太清了。":"线索指向很明显。";}
 
-// ==================== 人机回复玩家 ====================
-async function generateBotReply(botName, botRules, hasFalse, statements, suspects, caseDescription, playerMessage) {
-  if (!API_KEY) {
-    const lines = hasFalse ? ["我不太确定。", "我记不太清了。"] : ["线索指向很明显。", "关键证据已经有了。"];
-    return lines[Math.floor(Math.random() * lines.length)];
-  }
-  const myAllRules = botRules.map(r => r.rule);
-  const myUnrevealedRules = myAllRules.filter(r => !statements.some(s => s.rule === r));
-  const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const isAskingAboutRule = /规则|线索|另一条|还有什么|告诉我|你知道|你掌握|你的/.test(playerMessage);
-
-  let ruleInstruction = '';
-  if (isAskingAboutRule && myUnrevealedRules.length > 0) {
-    if (hasFalse) {
-      const fakeOptions = [
-        `"${suspects[Math.floor(Math.random() * suspects.length)]}在案发时有不在场证明"`,
-        `"现场没有找到任何可疑物品"`,
-        `"监控显示一切正常"`,
-        `"死者没有挣扎痕迹"`
-      ];
-      ruleInstruction = `玩家在问你的规则。你是扰乱者，可以撒谎。编造一条不存在的规则，比如：${fakeOptions[Math.floor(Math.random() * fakeOptions.length)]}。`;
-    } else {
-      const realRule = myUnrevealedRules[Math.floor(Math.random() * myUnrevealedRules.length)];
-      ruleInstruction = `玩家在问你的规则。你是推理者，必须诚实。你未公开的规则："${myUnrevealedRules.join('"、"')}"。如实说出其中一条，比如："${realRule}"。`;
-    }
-  }
-  const winCondition = hasFalse ? "立场：扰乱者。误导大家，可以撒谎。" : "立场：推理者。必须诚实，帮大家推理。";
-
-  const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。
-公开规则:${statementsText}。
-未公开:${myUnrevealedRules.join(';') || '无'}。
-${ruleInstruction}
-${winCondition}
-有人说:"${playerMessage}"。
-用纯中文回复，15-25字。不要有任何英文、字母或数字。只输出回复。`;
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const c = new AbortController(); const t = setTimeout(() => c.abort(), 8000);
-      const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` }, body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.7, max_tokens: 80 }), signal: c.signal });
-      clearTimeout(t); const d = await r.json();
-      let reply = d.choices[0].message.content.trim();
-      reply = cleanBotReply(reply, hasFalse);
-      if (reply && reply.length >= 3 && /[\u4e00-\u9fa5]/.test(reply)) {
-        if (reply.length > 30) reply = await compressReply(reply, botName);
-        return reply;
-      }
-    } catch (e) { }
-  }
-  if (isAskingAboutRule && myUnrevealedRules.length > 0 && !hasFalse) {
-    return myUnrevealedRules[Math.floor(Math.random() * myUnrevealedRules.length)];
-  }
-  return hasFalse ? "我记不太清了。" : "线索指向很明显。";
-}
-
-// ==================== 人机投票 ====================
-function botMakeAccusation(botRules, players, falseHolderCandidates, suspects, hasFalse) {
-  const falseCount = Math.max(1, falseHolderCandidates.length);
-  let guessedFalsePlayers = [];
-  if (hasFalse) {
-    const wrongCandidates = players.filter(p => !falseHolderCandidates.includes(p.id));
-    for (let i = 0; i < falseCount; i++) {
-      if (wrongCandidates.length > 0) guessedFalsePlayers.push(wrongCandidates.splice(Math.floor(Math.random() * wrongCandidates.length), 1)[0].id);
-    }
-  } else {
-    const candidates = [...falseHolderCandidates];
-    for (let i = 0; i < falseCount; i++) {
-      if (candidates.length > 0 && Math.random() < 0.6) guessedFalsePlayers.push(candidates.splice(Math.floor(Math.random() * candidates.length), 1)[0]);
-      else {
-        const others = players.filter(p => !guessedFalsePlayers.includes(p.id));
-        if (others.length > 0) guessedFalsePlayers.push(others[Math.floor(Math.random() * others.length)].id);
-      }
-    }
-  }
-  const murdererGuess = suspects[Math.floor(Math.random() * suspects.length)];
-  return { falsePlayerIds: [...new Set(guessedFalsePlayers)].slice(0, falseCount), murdererGuess };
-}
+function botMakeAccusation(botRules,players,falseHolderCandidates,suspects,hasFalse){const fc=Math.max(1,falseHolderCandidates.length);let g=[];if(hasFalse){const w=players.filter(p=>!falseHolderCandidates.includes(p.id));for(let i=0;i<fc;i++){if(w.length>0)g.push(w.splice(Math.floor(Math.random()*w.length),1)[0].id);}}else{const c=[...falseHolderCandidates];for(let i=0;i<fc;i++){if(c.length>0&&Math.random()<0.6)g.push(c.splice(Math.floor(Math.random()*c.length),1)[0]);else{const o=players.filter(p=>!g.includes(p.id));if(o.length>0)g.push(o[Math.floor(Math.random()*o.length)].id);}}}return{falsePlayerIds:[...new Set(g)].slice(0,fc),murdererGuess:suspects[Math.floor(Math.random()*suspects.length)]};}
 
 // ==================== Socket ====================
-io.on('connection', (socket) => {
-  console.log('连接:', socket.id);
+io.on('connection',(socket)=>{
+  console.log('连接:',socket.id);
 
-  socket.on('joinRoom', ({ nickname, roomId }) => {
-    if (!nickname) return;
-    const targetRoomId = roomId || generateRoomId();
-    if (!rooms.has(targetRoomId)) {
-      rooms.set(targetRoomId, {
-        players: new Map(), bots: new Map(), host: socket.id, phase: 'lobby',
-        caseData: null, playerAssignments: [], botAssignments: [],
-        statements: [], accusations: [], discussReady: new Set(), botTimers: [],
-        totalPlayers: 0, statementSubmitted: new Set()
-      });
-    }
-    const room = rooms.get(targetRoomId);
-    room.players.set(socket.id, { nickname, isBot: false });
-    socket.join(targetRoomId);
-    socket.emit('roomJoined', { roomId: targetRoomId, playerId: socket.id, players: getPlayersList(room), phase: room.phase, isHost: room.host === socket.id });
-    io.to(targetRoomId).emit('playerListUpdate', getPlayersList(room));
-  });
+  socket.on('startMatch',({nickname})=>{if(!nickname)return;if(matchQueue.find(p=>p.socket.id===socket.id)){socket.emit('matchStatus',{status:'waiting',message:'正在匹配中...'});return;}matchQueue.push({socket,nickname});console.log(`${nickname} 加入匹配队列，长度:${matchQueue.length}`);socket.emit('matchStatus',{status:'waiting',message:'寻找对手...'});tryMatch();});
+  socket.on('cancelMatch',()=>{const i=matchQueue.findIndex(p=>p.socket.id===socket.id);if(i!==-1){const p=matchQueue.splice(i,1)[0];console.log(`${p.nickname} 取消匹配`);socket.emit('matchStatus',{status:'cancelled',message:'已取消'});}});
 
-  socket.on('addBots', ({ roomId, count }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.host !== socket.id || room.phase !== 'lobby') return;
-    for (let i = 0; i < count; i++) room.bots.set(generateBotId(), { nickname: getBotName(room.bots.size + i), isBot: true });
-    io.to(roomId).emit('playerListUpdate', getPlayersList(room));
-  });
+  socket.on('joinRoom',({nickname,roomId})=>{if(!nickname)return;const rid=roomId||generateRoomId();if(!rooms.has(rid)){rooms.set(rid,{players:new Map(),bots:new Map(),host:socket.id,phase:'lobby',caseData:null,playerAssignments:[],botAssignments:[],statements:[],accusations:[],discussReady:new Set(),botTimers:[],totalPlayers:0,statementSubmitted:new Set()});}const room=rooms.get(rid);room.players.set(socket.id,{nickname,isBot:false});socket.join(rid);socket.emit('roomJoined',{roomId:rid,playerId:socket.id,players:getPlayersList(room),phase:room.phase,isHost:room.host===socket.id});io.to(rid).emit('playerListUpdate',getPlayersList(room));});
 
-  socket.on('removeBots', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.host !== socket.id || room.phase !== 'lobby') return;
-    room.bots.clear(); io.to(roomId).emit('playerListUpdate', getPlayersList(room));
-  });
+  socket.on('addBots',({roomId,count})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;for(let i=0;i<count;i++)room.bots.set(generateBotId(),{nickname:getBotName(room.bots.size+i),isBot:true});io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
+  socket.on('removeBots',({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;room.bots.clear();io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
 
-  socket.on('startGame', async ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.host !== socket.id) return;
-    const totalPlayers = room.players.size + room.bots.size;
-    if (totalPlayers < 2) { socket.emit('errorMessage', '至少2人'); return; }
-    room.totalPlayers = totalPlayers;
-    room.phase = 'preparing'; room.statementSubmitted = new Set();
-    io.to(roomId).emit('phaseChange', { phase: 'preparing', message: 'AI生成案件中...' });
-    try { room.caseData = await generateCase(totalPlayers); }
-    catch (e) { socket.emit('errorMessage', '案件生成失败'); room.phase = 'lobby'; return; }
-    const { falseCount } = getRuleCounts(totalPlayers);
-    const assignments = assignRules(room.caseData.trueRules, room.caseData.falseRules, totalPlayers);
-    const playerIds = Array.from(room.players.keys());
-    room.playerAssignments = [];
-    for (let i = 0; i < playerIds.length; i++) room.playerAssignments.push({ playerId: playerIds[i], rules: assignments[i].playerRules, hasFalse: assignments[i].hasFalse });
-    const botIds = Array.from(room.bots.keys());
-    room.botAssignments = [];
-    for (let i = 0; i < botIds.length; i++) room.botAssignments.push({ botId: botIds[i], rules: assignments[playerIds.length + i].playerRules, hasFalse: assignments[playerIds.length + i].hasFalse });
-    room.phase = 'reading'; room.statements = []; room.accusations = []; room.discussReady = new Set();
-    io.to(roomId).emit('phaseChange', { phase: 'reading', message: '查看规则', totalPlayers, falseCount });
-    for (const a of room.playerAssignments) {
-      const ps = io.sockets.sockets.get(a.playerId);
-      if (ps) ps.emit('yourRules', { rules: a.rules, hasFalseRule: a.hasFalse, caseTitle: room.caseData.caseTitle, caseDescription: room.caseData.caseDescription, suspects: room.caseData.suspects });
-    }
-    room.botAssignments.forEach((a) => {
-      const timer = setTimeout(() => {
-        if (room.phase === 'reading') {
-          room.discussReady.add(a.botId);
-          io.to(roomId).emit('readyProgress', { ready: room.discussReady.size, total: totalPlayers });
-          if (room.discussReady.size === totalPlayers) {
-            room.phase = 'statement'; room.discussReady.clear(); room.statements = []; room.statementSubmitted = new Set();
-            io.to(roomId).emit('phaseChange', { phase: 'statement', message: '陈述阶段', totalPlayers, falseCount });
-            startBotStatements(room, roomId);
-          }
-        }
-      }, 2000 + Math.random() * 3000);
-      room.botTimers.push(timer);
-    });
-  });
+  socket.on('startGame',async({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id)return;const tp=room.players.size+room.bots.size;if(tp<2){socket.emit('errorMessage','至少2人');return;}room.totalPlayers=tp;room.phase='preparing';room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'preparing',message:'AI生成案件中...'});try{room.caseData=await generateCase(tp);}catch(e){socket.emit('errorMessage','案件生成失败');room.phase='lobby';return;}const{falseCount}=getRuleCounts(tp);const as=assignRules(room.caseData.trueRules,room.caseData.falseRules,tp);const pids=Array.from(room.players.keys());room.playerAssignments=[];for(let i=0;i<pids.length;i++)room.playerAssignments.push({playerId:pids[i],rules:as[i].playerRules,hasFalse:as[i].hasFalse});const bids=Array.from(room.bots.keys());room.botAssignments=[];for(let i=0;i<bids.length;i++)room.botAssignments.push({botId:bids[i],rules:as[pids.length+i].playerRules,hasFalse:as[pids.length+i].hasFalse});room.phase='reading';room.statements=[];room.accusations=[];room.discussReady=new Set();io.to(roomId).emit('phaseChange',{phase:'reading',message:'查看规则',totalPlayers:tp,falseCount});for(const a of room.playerAssignments){const ps=io.sockets.sockets.get(a.playerId);if(ps)ps.emit('yourRules',{rules:a.rules,hasFalseRule:a.hasFalse,caseTitle:room.caseData.caseTitle,caseDescription:room.caseData.caseDescription,suspects:room.caseData.suspects});}room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='reading'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:tp});if(room.discussReady.size===tp){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:tp,falseCount});startBotStatements(room,roomId);}}},2000+Math.random()*3000);room.botTimers.push(timer);});});
 
-  function startBotStatements(room, roomId) {
-    room.botAssignments.forEach((a) => {
-      const timer = setTimeout(() => {
-        if (room.phase === 'statement') {
-          const rule = botSelectStatement(a.rules);
-          room.statements.push({ playerId: a.botId, nickname: room.bots.get(a.botId).nickname, rule });
-          room.statementSubmitted.add(a.botId);
-          io.to(roomId).emit('statementSubmitProgress', { submitted: room.statementSubmitted.size, total: room.totalPlayers });
-          if (room.statementSubmitted.size === room.totalPlayers) revealStatements(room, roomId);
-        }
-      }, 3000 + Math.random() * 4000);
-      room.botTimers.push(timer);
-    });
-  }
+  function startBotStatements(room,roomId){room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='statement'){const rule=botSelectStatement(a.rules);room.statements.push({playerId:a.botId,nickname:room.bots.get(a.botId).nickname,rule});room.statementSubmitted.add(a.botId);io.to(roomId).emit('statementSubmitProgress',{submitted:room.statementSubmitted.size,total:room.totalPlayers});if(room.statementSubmitted.size===room.totalPlayers)revealStatements(room,roomId);}},3000+Math.random()*4000);room.botTimers.push(timer);});}
+  function revealStatements(room,roomId){io.to(roomId).emit('statementsRevealed',room.statements);setTimeout(()=>{room.phase='discuss';room.discussReady.clear();io.to(roomId).emit('phaseChange',{phase:'discuss',message:'讨论',statements:room.statements,suspectList:room.caseData.suspects,totalPlayers:room.totalPlayers,falseCount:getRuleCounts(room.totalPlayers).falseCount});startBotDiscussion(room,roomId);setTimeout(()=>{if(room.phase==='discuss')io.to(roomId).emit('discussTimeout');},MAX_DISCUSS_TIME);},2000);}
+  function startBotDiscussion(room,roomId){room.botAssignments.forEach((a)=>{const count=1+Math.floor(Math.random()*2);for(let i=0;i<count;i++){const timer=setTimeout(async()=>{if(room.phase==='discuss'){const bi=room.bots.get(a.botId);const line=await generateBotDiscussionLine(bi.nickname,a.rules,a.hasFalse,room.statements,room.caseData.suspects,room.caseData.caseDescription);io.to(roomId).emit('chatMessage',{from:bi.nickname,message:line});}},8000+i*15000+Math.random()*8000);room.botTimers.push(timer);}});}
+  function startBotReadyToAccusation(room,roomId){room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='discuss'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:room.totalPlayers});if(room.discussReady.size===room.totalPlayers)startAccusationPhase(room,roomId);}},3000+Math.random()*5000);room.botTimers.push(timer);});}
+  function clearBotTimers(room){room.botTimers.forEach(t=>clearTimeout(t));room.botTimers=[];}
 
-  function revealStatements(room, roomId) {
-    io.to(roomId).emit('statementsRevealed', room.statements);
-    setTimeout(() => {
-      room.phase = 'discuss'; room.discussReady.clear();
-      io.to(roomId).emit('phaseChange', { phase: 'discuss', message: '讨论', statements: room.statements, suspectList: room.caseData.suspects, totalPlayers: room.totalPlayers, falseCount: getRuleCounts(room.totalPlayers).falseCount });
-      startBotDiscussion(room, roomId);
-      setTimeout(() => { if (room.phase === 'discuss') io.to(roomId).emit('discussTimeout'); }, MAX_DISCUSS_TIME);
-    }, 2000);
-  }
+  socket.on('chatMessage',({roomId,message})=>{const room=rooms.get(roomId);if(!room||room.phase!=='discuss')return;const player=room.players.get(socket.id);if(!player)return;io.to(roomId).emit('chatMessage',{from:player.nickname,message});room.bots.forEach(async(bi,bid)=>{if(message.includes(bi.nickname)){const ba=room.botAssignments.find(a=>a.botId===bid);if(!ba)return;setTimeout(async()=>{if(room.phase==='discuss'){const reply=await generateBotReply(bi.nickname,ba.rules,ba.hasFalse,room.statements,room.caseData.suspects,room.caseData.caseDescription,message);io.to(roomId).emit('chatMessage',{from:bi.nickname,message:reply});}},2000+Math.random()*3000);}});});
 
-  function startBotDiscussion(room, roomId) {
-    room.botAssignments.forEach((a) => {
-      const count = 1 + Math.floor(Math.random() * 2);
-      for (let i = 0; i < count; i++) {
-        const timer = setTimeout(async () => {
-          if (room.phase === 'discuss') {
-            const botInfo = room.bots.get(a.botId);
-            const line = await generateBotDiscussionLine(botInfo.nickname, a.rules, a.hasFalse, room.statements, room.caseData.suspects, room.caseData.caseDescription);
-            io.to(roomId).emit('chatMessage', { from: botInfo.nickname, message: line });
-          }
-        }, 8000 + i * 15000 + Math.random() * 8000);
-        room.botTimers.push(timer);
-      }
-    });
-  }
+  socket.on('readyToStatement',({roomId})=>{const room=rooms.get(roomId);if(!room||room.phase!=='reading')return;room.discussReady.add(socket.id);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:room.totalPlayers});if(room.discussReady.size===room.totalPlayers){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:room.totalPlayers,falseCount:getRuleCounts(room.totalPlayers).falseCount});startBotStatements(room,roomId);}});
+  socket.on('submitStatement',({roomId,rule})=>{const room=rooms.get(roomId);if(!room||room.phase!=='statement')return;const player=room.players.get(socket.id);if(!player)return;room.statements.push({playerId:socket.id,nickname:player.nickname,rule});room.statementSubmitted.add(socket.id);io.to(roomId).emit('statementSubmitProgress',{submitted:room.statementSubmitted.size,total:room.totalPlayers});if(room.statementSubmitted.size===room.totalPlayers)revealStatements(room,roomId);});
+  socket.on('readyToAccusation',({roomId})=>{const room=rooms.get(roomId);if(!room||room.phase!=='discuss')return;room.discussReady.add(socket.id);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:room.totalPlayers});if(room.discussReady.size===1)startBotReadyToAccusation(room,roomId);if(room.discussReady.size===room.totalPlayers)startAccusationPhase(room,roomId);});
+  socket.on('forceAccusation',({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='discuss')return;clearBotTimers(room);startAccusationPhase(room,roomId);});
 
-  function startBotReadyToAccusation(room, roomId) {
-    room.botAssignments.forEach((a) => {
-      const timer = setTimeout(() => {
-        if (room.phase === 'discuss') {
-          room.discussReady.add(a.botId);
-          io.to(roomId).emit('readyProgress', { ready: room.discussReady.size, total: room.totalPlayers });
-          if (room.discussReady.size === room.totalPlayers) startAccusationPhase(room, roomId);
-        }
-      }, 3000 + Math.random() * 5000);
-      room.botTimers.push(timer);
-    });
-  }
+  function startAccusationPhase(room,roomId){clearBotTimers(room);room.phase='accusation';room.accusations=[];const{falseCount}=getRuleCounts(room.totalPlayers);io.to(roomId).emit('phaseChange',{phase:'accusation',message:'指控',players:getPlayersList(room),suspectList:room.caseData.suspects,totalPlayers:room.totalPlayers,falseCount});startBotAccusations(room,roomId);}
+  function startBotAccusations(room,roomId){const ap=getPlayersList(room);const fi=room.botAssignments.filter(a=>a.hasFalse).map(a=>a.botId).concat(room.playerAssignments.filter(a=>a.hasFalse).map(a=>a.playerId));room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='accusation'){const{falsePlayerIds,murdererGuess}=botMakeAccusation(a.rules,ap.filter(p=>p.id!==a.botId),fi.filter(id=>id!==a.botId),room.caseData.suspects,a.hasFalse);room.accusations.push({playerId:a.botId,nickname:room.bots.get(a.botId).nickname,falsePlayerIds,murdererGuess,isBot:true});io.to(roomId).emit('accusationUpdate',{submitted:room.accusations.length,total:room.totalPlayers});if(room.accusations.length===room.totalPlayers)revealAccusations(room,roomId);}},2000+Math.random()*3000);room.botTimers.push(timer);});}
+  function revealAccusations(room,roomId){const fv={},mv={};room.accusations.forEach(a=>{(a.falsePlayerIds||[]).forEach(id=>{const n=(room.players.get(id)||room.bots.get(id))?.nickname||'?';fv[n]=(fv[n]||0)+1;});mv[a.murdererGuess]=(mv[a.murdererGuess]||0)+1;});const maj=Math.floor(room.totalPlayers/2)+1;io.to(roomId).emit('accusationsRevealed',{falseVotes:fv,murdererVotes:mv,totalPlayers:room.totalPlayers, majority:maj});setTimeout(()=>calcResults(room,roomId,fv,mv,maj),3000);}
+  socket.on('submitAccusation',({roomId,falsePlayerIds,murdererGuess})=>{const room=rooms.get(roomId);if(!room||room.phase!=='accusation')return;const player=room.players.get(socket.id);if(!player)return;room.accusations.push({playerId:socket.id,nickname:player.nickname,falsePlayerIds,murdererGuess,isBot:false});io.to(roomId).emit('accusationUpdate',{submitted:room.accusations.length,total:room.totalPlayers});if(room.accusations.length===room.totalPlayers)revealAccusations(room,roomId);});
 
-  function clearBotTimers(room) { room.botTimers.forEach(t => clearTimeout(t)); room.botTimers = []; }
-
-  socket.on('chatMessage', ({ roomId, message }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.phase !== 'discuss') return;
-    const player = room.players.get(socket.id);
-    if (!player) return;
-    io.to(roomId).emit('chatMessage', { from: player.nickname, message });
-    room.bots.forEach(async (botInfo, botId) => {
-      if (message.includes(botInfo.nickname)) {
-        const ba = room.botAssignments.find(a => a.botId === botId);
-        if (!ba) return;
-        setTimeout(async () => {
-          if (room.phase === 'discuss') {
-            const reply = await generateBotReply(botInfo.nickname, ba.rules, ba.hasFalse, room.statements, room.caseData.suspects, room.caseData.caseDescription, message);
-            io.to(roomId).emit('chatMessage', { from: botInfo.nickname, message: reply });
-          }
-        }, 2000 + Math.random() * 3000);
-      }
-    });
-  });
-
-  socket.on('readyToStatement', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.phase !== 'reading') return;
-    room.discussReady.add(socket.id);
-    io.to(roomId).emit('readyProgress', { ready: room.discussReady.size, total: room.totalPlayers });
-    if (room.discussReady.size === room.totalPlayers) {
-      room.phase = 'statement'; room.discussReady.clear(); room.statements = []; room.statementSubmitted = new Set();
-      io.to(roomId).emit('phaseChange', { phase: 'statement', message: '陈述阶段', totalPlayers: room.totalPlayers, falseCount: getRuleCounts(room.totalPlayers).falseCount });
-      startBotStatements(room, roomId);
-    }
-  });
-
-  socket.on('submitStatement', ({ roomId, rule }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.phase !== 'statement') return;
-    const player = room.players.get(socket.id);
-    if (!player) return;
-    room.statements.push({ playerId: socket.id, nickname: player.nickname, rule });
-    room.statementSubmitted.add(socket.id);
-    io.to(roomId).emit('statementSubmitProgress', { submitted: room.statementSubmitted.size, total: room.totalPlayers });
-    if (room.statementSubmitted.size === room.totalPlayers) revealStatements(room, roomId);
-  });
-
-  socket.on('readyToAccusation', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.phase !== 'discuss') return;
-    room.discussReady.add(socket.id);
-    io.to(roomId).emit('readyProgress', { ready: room.discussReady.size, total: room.totalPlayers });
-    if (room.discussReady.size === 1) startBotReadyToAccusation(room, roomId);
-    if (room.discussReady.size === room.totalPlayers) startAccusationPhase(room, roomId);
-  });
-
-  socket.on('forceAccusation', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.host !== socket.id || room.phase !== 'discuss') return;
-    clearBotTimers(room); startAccusationPhase(room, roomId);
-  });
-
-  function startAccusationPhase(room, roomId) {
+  function calcResults(room,roomId,fv,mv,maj){
     clearBotTimers(room);
-    room.phase = 'accusation'; room.accusations = [];
-    const { falseCount } = getRuleCounts(room.totalPlayers);
-    io.to(roomId).emit('phaseChange', { phase: 'accusation', message: '指控', players: getPlayersList(room), suspectList: room.caseData.suspects, totalPlayers: room.totalPlayers, falseCount });
-    startBotAccusations(room, roomId);
-  }
-
-  function startBotAccusations(room, roomId) {
-    const allPlayers = getPlayersList(room);
-    const falseIds = room.botAssignments.filter(a => a.hasFalse).map(a => a.botId).concat(room.playerAssignments.filter(a => a.hasFalse).map(a => a.playerId));
-    room.botAssignments.forEach((a) => {
-      const timer = setTimeout(() => {
-        if (room.phase === 'accusation') {
-          const { falsePlayerIds, murdererGuess } = botMakeAccusation(a.rules, allPlayers.filter(p => p.id !== a.botId), falseIds.filter(id => id !== a.botId), room.caseData.suspects, a.hasFalse);
-          room.accusations.push({ playerId: a.botId, nickname: room.bots.get(a.botId).nickname, falsePlayerIds, murdererGuess, isBot: true });
-          io.to(roomId).emit('accusationUpdate', { submitted: room.accusations.length, total: room.totalPlayers });
-          if (room.accusations.length === room.totalPlayers) revealAccusations(room, roomId);
-        }
-      }, 2000 + Math.random() * 3000);
-      room.botTimers.push(timer);
-    });
-  }
-
-  function revealAccusations(room, roomId) {
-    const fv = {}, mv = {};
-    room.accusations.forEach(a => {
-      (a.falsePlayerIds || []).forEach(id => { const n = (room.players.get(id) || room.bots.get(id))?.nickname || '?'; fv[n] = (fv[n] || 0) + 1; });
-      mv[a.murdererGuess] = (mv[a.murdererGuess] || 0) + 1;
-    });
-    const maj = Math.floor(room.totalPlayers / 2) + 1;
-    io.to(roomId).emit('accusationsRevealed', { falseVotes: fv, murdererVotes: mv, totalPlayers: room.totalPlayers, majority: maj });
-    setTimeout(() => calcResults(room, roomId, fv, mv, maj), 3000);
-  }
-
-  socket.on('submitAccusation', ({ roomId, falsePlayerIds, murdererGuess }) => {
-    const room = rooms.get(roomId);
-    if (!room || room.phase !== 'accusation') return;
-    const player = room.players.get(socket.id);
-    if (!player) return;
-    room.accusations.push({ playerId: socket.id, nickname: player.nickname, falsePlayerIds, murdererGuess, isBot: false });
-    io.to(roomId).emit('accusationUpdate', { submitted: room.accusations.length, total: room.totalPlayers });
-    if (room.accusations.length === room.totalPlayers) revealAccusations(room, roomId);
-  });
-
-  function calcResults(room, roomId, fv, mv, maj) {
-    clearBotTimers(room);
-    const realM = room.caseData.murderer;
-    const falseHolders = room.playerAssignments.filter(a => a.hasFalse).map(a => a.playerId).concat(room.botAssignments.filter(a => a.hasFalse).map(a => a.botId));
-    const correctFH = falseHolders.map(id => (room.players.get(id) || room.bots.get(id))?.nickname).filter(Boolean);
-    const falseCount = correctFH.length;
-    const selectedNames = Object.entries(fv).filter(([_, count]) => count >= maj).map(([name]) => name);
+    const realM=room.caseData.murderer;
+    const falseHolders=room.playerAssignments.filter(a=>a.hasFalse).map(a=>a.playerId).concat(room.botAssignments.filter(a=>a.hasFalse).map(a=>a.botId));
+    const correctFH=falseHolders.map(id=>(room.players.get(id)||room.bots.get(id))?.nickname).filter(Boolean);
+    const falseCount=correctFH.length;
     
-    let correctCount = 0, missedCount = 0;
-    
-    if (selectedNames.length === falseCount) {
-      for (const name of selectedNames) {
-        if (correctFH.includes(name)) correctCount++;
-      }
-      for (const name of correctFH) {
-        if (!selectedNames.includes(name)) missedCount++;
-      }
-    } else {
-      missedCount = falseCount;
+    // 逐个检查每个真正的假规则持有者是否票数过半
+    let correctCount=0, missedCount=0;
+    for(const name of correctFH){
+      if((fv[name]||0)>=maj) correctCount++;
+      else missedCount++;
     }
     
-    const falseGoodScore = correctCount;
-    const falseBadScore = missedCount;
+    const falseGoodScore=correctCount;
+    const falseBadScore=missedCount;
     
-    const topM = Object.entries(mv).sort((a, b) => b[1] - a[1])[0]?.[0];
-    const mOk = topM === realM && (mv[topM] || 0) >= maj;
-    const murdererGoodScore = mOk ? 1 : 0;
-    const murdererBadScore = mOk ? 0 : 1;
+    const topM=Object.entries(mv).sort((a,b)=>b[1]-a[1])[0]?.[0];
+    const mOk=topM===realM&&(mv[topM]||0)>=maj;
+    const murdererGoodScore=mOk?1:0;
+    const murdererBadScore=mOk?0:1;
     
-    const goodScore = falseGoodScore + murdererGoodScore;
-    const badScore = falseBadScore + murdererBadScore;
+    const goodScore=falseGoodScore+murdererGoodScore;
+    const badScore=falseBadScore+murdererBadScore;
     
-    const vd = room.accusations.map(a => ({ nickname: a.nickname, votedFalsePlayer: (a.falsePlayerIds || []).map(id => (room.players.get(id) || room.bots.get(id))?.nickname || '?').join(', '), votedMurderer: a.murdererGuess, isBot: a.isBot || false }));
-    const apr = [];
-    room.playerAssignments.forEach(a => { const p = room.players.get(a.playerId); apr.push({ nickname: p?.nickname || '?', hasFalse: a.hasFalse, rules: a.rules.map(r => ({ rule: r.rule, isTrue: r.isTrue })) }); });
-    room.botAssignments.forEach(a => { const b = room.bots.get(a.botId); apr.push({ nickname: b?.nickname || '?', hasFalse: a.hasFalse, rules: a.rules.map(r => ({ rule: r.rule, isTrue: r.isTrue })) }); });
+    const vd=room.accusations.map(a=>({nickname:a.nickname,votedFalsePlayer:(a.falsePlayerIds||[]).map(id=>(room.players.get(id)||room.bots.get(id))?.nickname||'?').join(', '),votedMurderer:a.murdererGuess,isBot:a.isBot||false}));
+    const apr=[];room.playerAssignments.forEach(a=>{const p=room.players.get(a.playerId);apr.push({nickname:p?.nickname||'?',hasFalse:a.hasFalse,rules:a.rules.map(r=>({rule:r.rule,isTrue:r.isTrue}))});});room.botAssignments.forEach(a=>{const b=room.bots.get(a.botId);apr.push({nickname:b?.nickname||'?',hasFalse:a.hasFalse,rules:a.rules.map(r=>({rule:r.rule,isTrue:r.isTrue}))});});
     
-    room.phase = 'result';
-    io.to(roomId).emit('gameResult', {
-      falseHolders: correctFH, realMurderer: realM, goodScore, badScore,
-      winner: goodScore >= badScore ? '正方（推理者）' : '反方（扰乱者）',
-      reasoning: room.caseData.reasoning, caseTitle: room.caseData.caseTitle,
-      allPlayerRules: apr, falseVotes: fv, murdererVotes: mv, majority: maj,
-      falseCorrect: falseGoodScore, murdererCorrect: mOk, voteDetails: vd,
-      correctCount, wrongCount: selectedNames.length - correctCount, missedCount, falseCount
-    });
-    room.caseData = null; room.playerAssignments = []; room.botAssignments = [];
-    room.statements = []; room.accusations = []; room.discussReady = new Set();
-    room.statementSubmitted = new Set(); room.totalPlayers = 0;
+    room.phase='result';
+    io.to(roomId).emit('gameResult',{falseHolders:correctFH,realMurderer:realM,goodScore,badScore,winner:goodScore>=badScore?'正方（推理者）':'反方（扰乱者）',reasoning:room.caseData.reasoning,caseTitle:room.caseData.caseTitle,allPlayerRules:apr,falseVotes:fv,murdererVotes:mv,majority:maj,falseCorrect:falseGoodScore,murdererCorrect:mOk,voteDetails:vd,correctCount,wrongCount:0,missedCount,falseCount});
+    room.caseData=null;room.playerAssignments=[];room.botAssignments=[];room.statements=[];room.accusations=[];room.discussReady=new Set();room.statementSubmitted=new Set();room.totalPlayers=0;
   }
 
-  socket.on('returnToLobby', ({ roomId }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    room.phase = 'lobby';
-    room.caseData = null; room.playerAssignments = []; room.botAssignments = [];
-    room.statements = []; room.accusations = []; room.discussReady = new Set();
-    room.statementSubmitted = new Set(); room.totalPlayers = 0;
-    clearBotTimers(room);
-    socket.emit('roomJoined', { roomId, playerId: socket.id, players: getPlayersList(room), phase: 'lobby', isHost: room.host === socket.id });
-    io.to(roomId).emit('playerListUpdate', getPlayersList(room));
-    io.to(roomId).emit('phaseChange', { phase: 'lobby', message: '等待房主开始...' });
-  });
+  socket.on('returnToLobby',({roomId})=>{const room=rooms.get(roomId);if(!room)return;room.phase='lobby';room.caseData=null;room.playerAssignments=[];room.botAssignments=[];room.statements=[];room.accusations=[];room.discussReady=new Set();room.statementSubmitted=new Set();room.totalPlayers=0;clearBotTimers(room);socket.emit('roomJoined',{roomId,playerId:socket.id,players:getPlayersList(room),phase:'lobby',isHost:room.host===socket.id});io.to(roomId).emit('playerListUpdate',getPlayersList(room));io.to(roomId).emit('phaseChange',{phase:'lobby',message:'等待房主开始...'});});
+  socket.on('leaveRoom',({roomId})=>handleLeave(socket,roomId));
+  socket.on('disconnect',()=>{const qi=matchQueue.findIndex(p=>p.socket.id===socket.id);if(qi!==-1)matchQueue.splice(qi,1);for(const[rid,room]of rooms.entries()){if(room.players.has(socket.id)){handleLeave(socket,rid);break;}}});
 
-  socket.on('leaveRoom', ({ roomId }) => handleLeave(socket, roomId));
-  socket.on('disconnect', () => { for (const [rid, room] of rooms.entries()) { if (room.players.has(socket.id)) { handleLeave(socket, rid); break; } } });
-
-  function handleLeave(socket, roomId) {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    clearBotTimers(room);
-    room.players.delete(socket.id); room.discussReady.delete(socket.id);
-    socket.leave(roomId);
-    if (room.players.size === 0) { rooms.delete(roomId); return; }
-    if (room.host === socket.id) room.host = room.players.keys().next().value;
-    io.to(roomId).emit('playerListUpdate', getPlayersList(room));
-  }
+  function handleLeave(socket,roomId){const room=rooms.get(roomId);if(!room)return;clearBotTimers(room);room.players.delete(socket.id);room.discussReady.delete(socket.id);socket.leave(roomId);if(room.players.size===0){rooms.delete(roomId);return;}if(room.host===socket.id)room.host=room.players.keys().next().value;io.to(roomId).emit('playerListUpdate',getPlayersList(room));}
 });
 
 const PORT = process.env.PORT || 3000;
