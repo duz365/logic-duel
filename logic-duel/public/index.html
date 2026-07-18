@@ -78,7 +78,7 @@
     .btn-row { display:flex; gap:8px; flex-wrap:wrap; } .btn-row button { flex:1; min-width:70px; }
     .timer { font-size:12px; color:#8a9ab0; text-align:center; }
     select { background:#1a2632; color:#d0dde8; }
-    .statement-board, .my-rules-board, .bot-panel, .vote-result-board {
+    .statement-board, .my-rules-board, .bot-panel, .vote-result-board, .vote-detail-board {
       background:#0d141c;
       border-radius:10px;
       padding:10px;
@@ -86,6 +86,7 @@
     }
     .bot-panel { border:1px dashed #3a4a5a; }
     .vote-result-board { border:1px solid #3a5a4a; }
+    .vote-detail-board { border:1px solid #4a5a3a; }
     .statement-entry { padding:6px 0; border-bottom:1px solid #1e2a34; font-size:13px; }
     .statement-entry:last-child { border-bottom:none; }
     .collapsible-header {
@@ -151,6 +152,36 @@
       user-select: auto;
       pointer-events: auto;
     }
+    .vote-detail-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      border-bottom: 1px solid #1e2a34;
+      font-size: 12px;
+    }
+    .vote-detail-row:last-child { border-bottom: none; }
+    .vote-detail-row .voter { font-weight: bold; min-width: 80px; }
+    .vote-detail-row .choices { text-align: right; }
+    .final-score {
+      text-align: center;
+      font-size: 1.3em;
+      font-weight: bold;
+      padding: 12px;
+      background: #1a2838;
+      border-radius: 12px;
+      margin: 8px 0;
+    }
+    .winner-badge {
+      text-align: center;
+      font-size: 1.2em;
+      padding: 8px;
+      background: #2a3a1a;
+      border: 2px solid #c49b4a;
+      border-radius: 12px;
+      margin: 8px 0;
+      color: #e0d0a0;
+    }
   </style>
 </head>
 <body>
@@ -212,11 +243,11 @@
           <div id="statementMyRulesContent"></div>
         </div>
       </div>
-      <div style="font-size:12px;color:#c8c860;margin-top:4px;">⚠️ 所有人提交后规则才会公布，提交后不可更改</div>
+      <div style="font-size:12px;color:#c8c860;margin-top:4px;">⚠️ 所有人提交后规则才会公布</div>
       <div id="statementRulesList"></div>
       <div id="statementStatus" style="color:#8a9a6a;font-size:13px;margin-top:4px;"></div>
       <div id="statementWaitingNotice" class="waiting-notice" style="display:none;">
-        ⏳ 等待其他玩家提交规则...（所有人提交后统一公布）
+        ⏳ 等待其他玩家提交规则...
       </div>
       <div class="statement-board hidden-rules" id="statementBoard" style="display:none;">
         <strong style="font-size:13px;">📢 已公开的规则：</strong>
@@ -261,7 +292,7 @@
         ⏳ 等待其他玩家提交指控...
       </div>
       <div class="vote-stats hidden-rules" id="voteStats" style="display:none;">
-        <strong style="font-size:13px;">📊 实时投票（所有人提交后公布）</strong>
+        <strong style="font-size:13px;">📊 投票结果（所有人提交后公布）</strong>
         <div id="voteStatsContent"></div>
       </div>
     </div>
@@ -340,17 +371,6 @@
   }
   window.toggleCollapse = toggleCollapse;
 
-  socket.on('roomJoined', ({ roomId, playerId, players, phase, isHost }) => {
-    state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
-    $('roomCode').textContent = roomId;
-    updatePlayers(players);
-    document.getElementById('loginScreen').classList.remove('active');
-    document.getElementById('gameScreen').classList.add('active');
-    clearChat();
-    resetAllState();
-    setPhase(phase);
-  });
-
   function resetAllState() {
     state.currentStatements = [];
     state.hasFalseRule = false;
@@ -413,6 +433,17 @@
     });
   }
 
+  socket.on('roomJoined', ({ roomId, playerId, players, phase, isHost }) => {
+    state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
+    $('roomCode').textContent = roomId;
+    updatePlayers(players);
+    document.getElementById('loginScreen').classList.remove('active');
+    document.getElementById('gameScreen').classList.add('active');
+    clearChat();
+    resetAllState();
+    setPhase(phase);
+  });
+
   socket.on('playerListUpdate', updatePlayers);
 
   socket.on('phaseChange', ({ phase, message, suspectList, players, statements, totalPlayers }) => {
@@ -426,7 +457,6 @@
     resetUIState();
     
     if (phase === 'statement') {
-      // 陈述阶段：规则还未公布，保持隐藏
       $('statementBoard').style.display = 'none';
       $('statementBoard').classList.add('hidden-rules');
       state.currentStatements = [];
@@ -494,7 +524,6 @@
     }
   });
 
-  // 所有人提交后公布规则
   socket.on('statementsRevealed', (statements) => {
     state.currentStatements = statements;
     $('statementWaitingNotice').style.display = 'none';
@@ -508,7 +537,6 @@
   });
 
   socket.on('statementUpdate', (statements) => {
-    // 仅用于更新讨论阶段的展示，不影响陈述阶段
     state.currentStatements = statements;
   });
 
@@ -521,7 +549,6 @@
     }
   });
 
-  // 所有人提交指控后公布投票结果
   socket.on('accusationsRevealed', ({ falseVotes, murdererVotes, totalPlayers, majority }) => {
     $('accusationWaitingNotice').style.display = 'none';
     $('voteStats').style.display = 'block';
@@ -549,9 +576,45 @@
     addChat('[系统] ⏰ 讨论时间已到，房主可强制推进', true);
   });
 
-  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority }) => {
+  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, mostVotedFalse, mostVotedMurderer, falseCorrect, murdererCorrect, voteDetails }) => {
     setPhase('result', '🏆 游戏结束');
     
+    // 每位玩家的详细投票
+    let voteDetailHtml = '';
+    if (voteDetails && voteDetails.length > 0) {
+      voteDetailHtml = `
+        <div class="vote-detail-board" style="margin-bottom:10px;">
+          <strong style="font-size:13px;">🗳️ 每位玩家的投票详情：</strong>
+          ${voteDetails.map(v => `
+            <div class="vote-detail-row">
+              <span class="voter">${v.nickname}${v.isBot ? ' 🤖' : ''}</span>
+              <span class="choices">假规则→<strong>${v.votedFalsePlayer}</strong> | 凶手→<strong>${v.votedMurderer}</strong></span>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // 投票汇总
+    let voteHtml = '';
+    if (falseVotes && murdererVotes && mostVotedFalse && mostVotedMurderer) {
+      voteHtml = `
+        <div class="vote-result-board" style="margin-bottom:10px;">
+          <strong style="font-size:13px;">📊 投票汇总 (过半数=${majority}票)</strong>
+          <div style="margin-top:8px;">
+            <p>🔍 <strong>假规则持有者</strong>最高票: <strong>${mostVotedFalse}</strong> (${falseVotes[mostVotedFalse]}票) → ${falseCorrect ? '<span class="correct">✅ 正确</span>' : '<span class="wrong">❌ 错误</span>'}</p>
+            <p style="font-size:11px; color:#8a9a6a;">实际假规则持有者: ${falseHolders.join(', ')}</p>
+          </div>
+          <div style="margin-top:8px;">
+            <p>🔪 <strong>凶手</strong>最高票: <strong>${mostVotedMurderer}</strong> (${murdererVotes[mostVotedMurderer]}票) → ${murdererCorrect ? '<span class="correct">✅ 正确</span>' : '<span class="wrong">❌ 错误</span>'}</p>
+            <p style="font-size:11px; color:#8a9a6a;">实际凶手: ${realMurderer}</p>
+          </div>
+          <p style="margin-top:8px; font-size:11px; color:#8a9a6a;">得分规则: 每项过半数正确→正方+1分，未过半→反方+1分</p>
+        </div>
+      `;
+    }
+
+    // 所有玩家规则
     let allRulesHtml = '';
     if (allPlayerRules && allPlayerRules.length > 0) {
       allRulesHtml = `
@@ -566,37 +629,16 @@
         </div>
       `;
     }
-
-    let voteHtml = '';
-    if (falseVotes && murdererVotes) {
-      voteHtml = `
-        <div class="vote-result-board" style="margin-bottom:10px;">
-          <strong style="font-size:13px;">📊 最终投票结果 (过半数=${majority}票)</strong>
-          <p style="margin-top:6px;"><strong>🔍 假规则持有者:</strong></p>
-          ${Object.entries(falseVotes).map(([name, count]) => {
-            const reached = count >= majority;
-            return `<div class="vote-result-row"><span>${name}</span><span>${count}票 ${reached ? '✅' : '❌'}</span></div>`;
-          }).join('')}
-          <p style="margin-top:8px;"><strong>🔪 凶手:</strong></p>
-          ${Object.entries(murdererVotes).map(([name, count]) => {
-            const reached = count >= majority;
-            return `<div class="vote-result-row"><span>${name}</span><span>${count}票 ${reached ? '✅' : '❌'}</span></div>`;
-          }).join('')}
-          <p style="margin-top:8px; font-size:11px; color:#8a9a6a;">得分规则: 每项过半数正确→正方+1分，未过半→反方+1分</p>
-        </div>
-      `;
-    }
     
     $('resultContent').innerHTML = `
       <h4>${caseTitle}</h4>
-      <p><strong>真凶：</strong>${realMurderer}</p>
-      <p><strong>持有假规则的玩家：</strong>${falseHolders.join(', ')}</p>
-      <hr style="border-color:#2a3a4a; margin:8px 0;">
+      ${voteDetailHtml}
       ${voteHtml}
       ${allRulesHtml}
-      <hr style="border-color:#2a3a4a; margin:8px 0;">
-      <p style="text-align:center; font-size:1.2em;"><strong>正方(推理者) ${goodScore} : ${badScore} 反方(扰乱者)</strong></p>
-      <p style="text-align:center; font-size:1.1em; margin:8px 0;">🏆 <strong>${winner} 获胜！</strong></p>
+      <div class="final-score">
+        正方(推理者) <strong>${goodScore}</strong> : <strong>${badScore}</strong> 反方(扰乱者)
+      </div>
+      <div class="winner-badge">🏆 <strong>${winner} 获胜！</strong></div>
       <details style="margin-top:8px;">
         <summary style="cursor:pointer; color:#c8a860;">查看完整推理链</summary>
         <p style="margin-top:8px; font-size:13px;">${reasoning}</p>
