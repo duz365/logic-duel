@@ -74,7 +74,7 @@
       background: #2a1a1a;
       color: #d08a8a;
     }
-    .result-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #253545; font-size:13px; }
+    .result-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #253545; font-size:13px; flex-wrap:wrap; gap:4px; }
     .correct { color:#5ac85a; } .wrong { color:#c85a5a; }
     .btn-row { display:flex; gap:8px; } .btn-row button { flex:1; }
     .timer { font-size:12px; color:#8a9ab0; text-align:center; }
@@ -100,6 +100,39 @@
     .collapsible-body { margin-top:6px; }
     .arrow { transition: transform 0.2s; display: inline-block; }
     .arrow.open { transform: rotate(90deg); }
+    .warning-badge {
+      background: #5a2a2a;
+      border: 1px solid #8b4a4a;
+      border-radius: 12px;
+      padding: 8px 12px;
+      color: #e0a0a0;
+      font-size: 12px;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    .player-rules-card {
+      background: #0d141c;
+      border-radius: 8px;
+      padding: 8px;
+      margin: 4px 0;
+      border-left: 3px solid #2e4456;
+    }
+    .player-rules-card.false-holder {
+      border-left-color: #8b4a4a;
+    }
+    .rule-detail {
+      font-size: 12px;
+      padding: 2px 0;
+      color: #a0b0c0;
+    }
+    .rule-detail.false {
+      color: #d08a8a;
+      text-decoration: line-through;
+      text-decoration-color: #8b4a4a;
+    }
+    .rule-detail.true {
+      color: #8ab8a0;
+    }
   </style>
 </head>
 <body>
@@ -127,6 +160,9 @@
     <div id="readingPhase" style="display:none;" class="card">
       <h3>📖 你的规则手册</h3>
       <div id="caseInfo"></div>
+      <div id="falseWarning" class="warning-badge" style="display:none;">
+        ⚠️ 你手中的规则有一条是假的！但你不知道是哪一条。请谨慎选择公开的规则。
+      </div>
       <div id="yourRulesList"></div>
       <button id="readyToStatementBtn" class="success" style="margin-top:8px;">我已阅读完毕，进入陈述阶段</button>
       <div id="readingStatus" style="font-size:12px;color:#8a9a6a;text-align:center;margin-top:4px;"></div>
@@ -136,7 +172,6 @@
     <div id="statementPhase" style="display:none;" class="card">
       <h3>📢 选择一条规则公开</h3>
       
-      <!-- 我的规则 -->
       <div class="my-rules-board" id="statementMyRules">
         <div class="collapsible-header" onclick="toggleCollapse('statementMyRulesBody', this)">
           <span>📋 我持有的规则 (点击展开/收起)</span>
@@ -150,7 +185,6 @@
       <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击下方一条规则将其公开（不可说谎，即使假规则也照原话公开）</div>
       <div id="statementRulesList"></div>
 
-      <!-- 已公开规则 -->
       <div class="statement-board" id="statementBoard" style="display:none;">
         <strong style="font-size:13px;">📢 已公开的规则：</strong>
         <div id="statementEntries"></div>
@@ -162,7 +196,6 @@
     <div id="discussPhase" style="display:none;" class="card">
       <h3>💬 自由讨论</h3>
 
-      <!-- 我的规则 -->
       <div class="my-rules-board" id="discussMyRules">
         <div class="collapsible-header" onclick="toggleCollapse('discussMyRulesBody', this)">
           <span>📋 我持有的规则 (点击展开/收起)</span>
@@ -173,7 +206,6 @@
         </div>
       </div>
 
-      <!-- 已公开规则 -->
       <div class="statement-board" id="discussStatementBoard" style="display:none;">
         <strong style="font-size:13px;">📢 已公开的规则：</strong>
         <div id="discussStatementEntries"></div>
@@ -212,7 +244,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], suspects:[], selectedRuleIndex:null, hasSubmitted:false, currentStatements:[] };
+  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], selectedRuleIndex:null, hasSubmitted:false, currentStatements:[] };
 
   const $ = id => document.getElementById(id);
 
@@ -253,7 +285,7 @@
     const container = $(targetId);
     if (!container || !state.myRules.length) return;
     container.innerHTML = state.myRules.map((r, i) => {
-      // 不标注真假，玩家自己也不知道
+      // 不标注真假，玩家只知道"可能有假"但不知道哪条
       return `<span class="my-rule-tag">📌 ${r.rule}</span>`;
     }).join('');
   }
@@ -279,6 +311,8 @@
     document.getElementById('gameScreen').classList.add('active');
     clearChat();
     state.currentStatements = [];
+    state.hasFalseRule = false;
+    $('falseWarning').style.display = 'none';
     setPhase(phase);
     resetUIState();
   });
@@ -343,16 +377,19 @@
     if (phase === 'reading') {
       clearChat();
       state.currentStatements = [];
+      if (state.hasFalseRule) {
+        $('falseWarning').style.display = 'block';
+      }
     }
-    // 重新渲染我的规则
     if (state.myRules.length > 0) {
       renderMyRules('statementMyRulesContent');
       renderMyRules('discussMyRulesContent');
     }
   });
 
-  socket.on('yourRules', ({ rules, caseTitle, caseDescription, suspects }) => {
+  socket.on('yourRules', ({ rules, hasFalseRule, caseTitle, caseDescription, suspects }) => {
     state.myRules = rules;
+    state.hasFalseRule = hasFalseRule || false;
     state.suspects = suspects;
     state.selectedRuleIndex = null;
     state.hasSubmitted = false;
@@ -365,11 +402,15 @@
     $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
     $('readingStatus').textContent = '';
     
-    // 渲染我的规则到各处
+    if (state.hasFalseRule) {
+      $('falseWarning').style.display = 'block';
+    } else {
+      $('falseWarning').style.display = 'none';
+    }
+    
     renderMyRules('statementMyRulesContent');
     renderMyRules('discussMyRulesContent');
     
-    // 默认展开
     $('statementMyRulesBody').style.display = 'block';
     $('statementMyRulesArrow').classList.add('open');
     $('discussMyRulesBody').style.display = 'block';
@@ -400,12 +441,37 @@
     addChat('[系统] ⏰ 讨论时间已到，房主可强制推进', true);
   });
 
-  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle }) => {
+  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules }) => {
     setPhase('result', '🏆 游戏结束');
+    
+    // 构建所有玩家规则展示
+    let allRulesHtml = '';
+    if (allPlayerRules && allPlayerRules.length > 0) {
+      allRulesHtml = `
+        <div class="statement-board" style="margin-bottom:10px;">
+          <strong style="font-size:13px;">📋 所有玩家持有的规则：</strong>
+          ${allPlayerRules.map(p => `
+            <div class="player-rules-card ${p.hasFalse ? 'false-holder' : ''}">
+              <div style="font-weight:bold; font-size:13px; margin-bottom:4px;">
+                ${p.nickname} ${p.hasFalse ? '🔴 持有假规则' : '🟢 全部真规则'}
+              </div>
+              ${p.rules.map(r => `
+                <div class="rule-detail ${r.isTrue ? 'true' : 'false'}">
+                  ${r.isTrue ? '✅' : '❌'} ${r.rule}
+                </div>
+              `).join('')}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
     $('resultContent').innerHTML = `
       <h4>${caseTitle}</h4>
       <p><strong>真凶：</strong>${realMurderer}</p>
       <p><strong>持有假规则的玩家：</strong>${falseHolders.join(', ')}</p>
+      <hr style="border-color:#2a3a4a; margin:8px 0;">
+      ${allRulesHtml}
       <hr style="border-color:#2a3a4a; margin:8px 0;">
       ${results.map(r => `
         <div class="result-row">
@@ -505,6 +571,7 @@
     clearChat();
     state.currentStatements = [];
     state.myRules = [];
+    state.hasFalseRule = false;
   });
 
   $('leaveRoomBtn').addEventListener('click', () => {
@@ -514,6 +581,7 @@
     clearChat();
     state.currentStatements = [];
     state.myRules = [];
+    state.hasFalseRule = false;
   });
 </script>
 </body>
