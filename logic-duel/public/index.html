@@ -22,9 +22,10 @@
     button.success { background:#2a5a3a; }
     button.bot-btn { background:#3a4a6a; border:1px solid #5a6a8a; font-size:13px; }
     button.match-btn { background:#4a3a6a; border:1px solid #6a5a8a; }
+    button.kick-btn { background:#5a2a2a; font-size:10px; padding:4px 8px; width:auto; border-radius:8px; }
     .card { background:#16202a; border-radius:14px; padding:14px; border:1px solid #253545; }
     .player-list { display:flex; flex-wrap:wrap; gap:6px; }
-    .player-badge { background:#1e3040; border-radius:16px; padding:6px 14px; font-size:13px; }
+    .player-badge { background:#1e3040; border-radius:16px; padding:6px 14px; font-size:13px; display:flex; align-items:center; gap:6px; }
     .player-badge.bot { background:#2a1a30; border:1px dashed #5a4a6a; color:#c0a0d0; }
     .messages { max-height:200px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; background:#0d141c; border-radius:12px; padding:10px; font-size:13px; }
     .msg { background:#1a2834; border-radius:10px; padding:8px 12px; word-break:break-word; }
@@ -80,6 +81,7 @@
     .match-status { text-align:center; padding:20px; background:#1a2838; border-radius:12px; }
     .match-status .spinner { font-size:2em; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+    .room-match-badge { background:#3a2a4a; border-radius:8px; padding:6px 10px; font-size:12px; text-align:center; color:#c0a0e0; }
   </style>
 </head>
 <body>
@@ -112,9 +114,14 @@
       <span id="playerCount">👥 0人</span>
     </div>
     <div class="player-list" id="playersList"></div>
+    <div id="roomMatchStatus" class="room-match-badge" style="display:none;"></div>
 
     <div id="hostControls" style="display:none;">
-      <button id="startGameBtn" class="gold">▶ 开始游戏</button>
+      <div class="btn-row">
+        <button id="startGameBtn" class="gold" style="flex:2;">▶ 开始游戏</button>
+        <button id="roomMatchBtn" class="match-btn" style="flex:1;">🔍 匹配</button>
+        <button id="cancelRoomMatchBtn" class="danger" style="flex:1; display:none;">取消匹配</button>
+      </div>
       <div class="bot-panel" style="margin-top:8px;">
         <div style="font-size:12px;color:#8a9a6a;margin-bottom:6px;">🤖 人机设置</div>
         <div class="btn-row">
@@ -167,8 +174,7 @@
 
     <div id="accusationPhase" style="display:none;" class="card">
       <h3>⚖️ 最终指控</h3>
-      <div>
-        <label>谁持有假规则？（<strong>必须选正好 <span id="requiredSelectCount">1</span> 位</strong>）</label>
+      <div><label>谁持有假规则？（<strong>必须选正好 <span id="requiredSelectCount">1</span> 位</strong>）</label>
         <div id="falsePlayerCheckboxes" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;"></div>
         <div class="selection-counter" id="selectionCounter">已选: 0 / 需要选: 1</div>
       </div>
@@ -192,7 +198,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], currentStatements:[], botCount:0, hasSubmittedStatement:false, hasSubmittedAccusation:false, totalPlayers:0, falseRuleCount:0, requiredSelectCount:1, isMatching:false };
+  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], currentStatements:[], botCount:0, hasSubmittedStatement:false, hasSubmittedAccusation:false, totalPlayers:0, falseRuleCount:0, requiredSelectCount:1, isMatching:false, isRoomMatching:false };
 
   const $ = id => document.getElementById(id);
 
@@ -202,7 +208,6 @@
     ['readingPhase','statementPhase','discussPhase','accusationPhase','resultPhase'].forEach(p => $(p).style.display='none');
     $('forceAccusationBtn').style.display = 'none';
     updateHostUI();
-    if (phase==='lobby') {}
     if (phase==='reading') $('readingPhase').style.display='block';
     if (phase==='statement') $('statementPhase').style.display='block';
     if (phase==='discuss') $('discussPhase').style.display='block';
@@ -213,6 +218,10 @@
   function updateHostUI() {
     const show = state.isHost && state.phase === 'lobby';
     $('hostControls').style.display = show ? 'block' : 'none';
+    if (show) {
+      $('roomMatchBtn').style.display = state.isRoomMatching ? 'none' : 'block';
+      $('cancelRoomMatchBtn').style.display = state.isRoomMatching ? 'block' : 'none';
+    }
   }
 
   function addChat(msg, sys) {
@@ -226,12 +235,10 @@
     const c = $(targetId); if (!c) return;
     c.innerHTML = statements.map(s => `<div class="statement-entry"><strong>${s.nickname}:</strong> "${s.rule}"</div>`).join('');
   }
-
   function renderMyRules(targetId) {
     const c = $(targetId); if (!c || !state.myRules.length) return;
     c.innerHTML = state.myRules.map(r => `<span class="my-rule-tag">📌 ${r.rule}</span>`).join('');
   }
-
   function toggleCollapse(bodyId, headerEl) {
     const body = document.getElementById(bodyId), arrow = headerEl.querySelector('.arrow');
     if (body.style.display === 'none') { body.style.display = 'block'; if (arrow) arrow.classList.add('open'); }
@@ -255,15 +262,23 @@
     state.botCount = players.filter(p => p.isBot).length;
     state.totalPlayers = players.length;
     $('playerCount').textContent = `👥 ${players.length}人`;
-    $('playersList').innerHTML = players.map(p => 
-      `<span class="player-badge ${p.isBot ? 'bot' : ''}">${p.nickname}${p.isBot ? ' 🤖' : ''}${p.isHost?' 👑':''}${p.id===state.playerId?' (你)':''}</span>`
-    ).join('');
+    $('playersList').innerHTML = players.map(p => {
+      const canKick = state.isHost && state.phase === 'lobby' && p.id !== state.playerId && !p.isBot;
+      const kickBtn = canKick ? `<button class="kick-btn" onclick="kickPlayer('${p.id}')">踢出</button>` : '';
+      return `<span class="player-badge ${p.isBot ? 'bot' : ''}">${p.nickname}${p.isBot ? ' 🤖' : ''}${p.isHost?' 👑':''}${p.id===state.playerId?' (你)':''}${kickBtn}</span>`;
+    }).join('');
     const me = players.find(p => p.id===state.playerId);
     state.isHost = me?.isHost || false;
     updateHostUI();
     $('botCountDisplay').textContent = `当前人机: ${state.botCount}`;
     if (state.phase === 'accusation') renderCheckboxes();
   }
+
+  window.kickPlayer = function(targetId) {
+    if (confirm('确定要踢出该玩家吗？')) {
+      socket.emit('kickPlayer', { roomId: state.roomId, targetId });
+    }
+  };
 
   function renderCheckboxes() {
     const others = state.players.filter(p => p.id !== state.playerId);
@@ -309,7 +324,7 @@
     document.querySelectorAll('#statementRulesList .rule-item').forEach(el => el.classList.remove('selected','submitted'));
   }
 
-  // ==================== 匹配系统事件 ====================
+  // ========== 匹配系统 ==========
   socket.on('matchStatus', ({ status, message }) => {
     if (status === 'waiting') {
       document.getElementById('loginScreen').classList.remove('active');
@@ -327,17 +342,46 @@
     document.getElementById('matchScreen').classList.remove('active');
     document.getElementById('gameScreen').classList.add('active');
     state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
-    state.isMatching = false;
+    state.isMatching = false; state.isRoomMatching = false;
     $('roomCode').textContent = roomId;
+    $('roomMatchStatus').style.display = 'none';
     updatePlayers(players);
     clearChat(); resetAllState(); setPhase(phase);
     if (message) addChat('[系统] ' + message, true);
   });
 
-  // ==================== 房间事件 ====================
+  socket.on('roomMatchStatus', ({ status, message }) => {
+    if (status === 'matching') {
+      state.isRoomMatching = true;
+      $('roomMatchStatus').style.display = 'block';
+      $('roomMatchStatus').textContent = '🔍 ' + message;
+      $('roomMatchBtn').style.display = 'none';
+      $('cancelRoomMatchBtn').style.display = 'block';
+    } else if (status === 'matched' || status === 'cancelled') {
+      state.isRoomMatching = false;
+      $('roomMatchStatus').style.display = status === 'matched' ? 'block' : 'none';
+      if (status === 'matched') $('roomMatchStatus').textContent = '✅ ' + message;
+      $('roomMatchBtn').style.display = 'block';
+      $('cancelRoomMatchBtn').style.display = 'none';
+    }
+  });
+
+  socket.on('kicked', ({ message }) => {
+    alert(message);
+    document.getElementById('gameScreen').classList.remove('active');
+    document.getElementById('loginScreen').classList.add('active');
+    clearChat(); resetAllState();
+  });
+
+  // ========== 房间系统 ==========
   socket.on('roomJoined', ({ roomId, playerId, players, phase, isHost }) => {
     state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
-    $('roomCode').textContent = roomId; updatePlayers(players);
+    state.isRoomMatching = false;
+    $('roomCode').textContent = roomId;
+    $('roomMatchStatus').style.display = 'none';
+    $('roomMatchBtn').style.display = 'block';
+    $('cancelRoomMatchBtn').style.display = 'none';
+    updatePlayers(players);
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('gameScreen').classList.add('active');
     clearChat(); resetAllState(); setPhase(phase);
@@ -398,67 +442,36 @@
 
   socket.on('gameResult', ({ falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, falseCorrect, murdererCorrect, voteDetails, correctCount, missedCount, falseCount }) => {
     setPhase('result', '🏆 游戏结束');
-    let vdHtml = '';
-    if (voteDetails?.length > 0) {
-      vdHtml = `<div class="vote-detail-board"><strong>🗳️ 每位玩家的投票：</strong>${voteDetails.map(v => `<div class="vote-detail-row"><span>${v.nickname}${v.isBot?' 🤖':''}</span><span>假→${v.votedFalsePlayer} | 凶→${v.votedMurderer}</span></div>`).join('')}</div>`;
-    }
-    let scoreHtml = '';
-    if (falseCount !== undefined) {
-      scoreHtml = `<div class="vote-result-board" style="margin-top:8px;">
-        <strong>📊 假规则计分 (共${falseCount}位持有者，每人单独判定过半)</strong>
-        <p style="margin-top:4px;">✅ 成功指认: ${correctCount||0}人 → 推理方 +${correctCount||0}分</p>
-        <p>🔍 漏选: ${missedCount||0}人 → 扰乱方 +${missedCount||0}分</p>
-        <p style="font-size:11px;color:#8a9a6a;">(错误选中双方都不加分)</p>
-        <p style="margin-top:4px;">🔪 凶手: ${murdererCorrect ? '✅正确 → 推理方+1分' : '❌错误 → 扰乱方+1分'}</p>
-      </div>`;
-    }
+    let vdHtml = voteDetails?.length > 0 ? `<div class="vote-detail-board"><strong>🗳️ 每位玩家的投票：</strong>${voteDetails.map(v => `<div class="vote-detail-row"><span>${v.nickname}${v.isBot?' 🤖':''}</span><span>假→${v.votedFalsePlayer} | 凶→${v.votedMurderer}</span></div>`).join('')}</div>` : '';
+    let scoreHtml = falseCount !== undefined ? `<div class="vote-result-board" style="margin-top:8px;"><strong>📊 假规则计分 (共${falseCount}位)</strong><p style="margin-top:4px;">✅ 成功指认: ${correctCount||0}人 → 推理方 +${correctCount||0}分</p><p>🔍 漏选: ${missedCount||0}人 → 扰乱方 +${missedCount||0}分</p><p style="font-size:11px;color:#8a9a6a;">(错误选中双方都不加分)</p><p style="margin-top:4px;">🔪 凶手: ${murdererCorrect ? '✅正确 → 推理方+1分' : '❌错误 → 扰乱方+1分'}</p></div>` : '';
     let vHtml = `<div class="vote-result-board"><strong>📊 投票汇总</strong><p style="margin-top:6px;">实际假规则持有者: ${falseHolders.join(', ')}</p><p>实际凶手: ${realMurderer}</p></div>`;
-    let arHtml = '';
-    if (allPlayerRules?.length > 0) {
-      arHtml = `<div class="statement-board"><strong>📋 所有规则：</strong>${allPlayerRules.map(p => `<div class="player-rules-card ${p.hasFalse?'false-holder':''}"><div style="font-weight:bold;">${p.nickname} ${p.hasFalse?'🔴假':'🟢真'}</div>${p.rules.map(r => `<div class="rule-detail ${r.isTrue?'true':'false'}">${r.isTrue?'✅':'❌'} ${r.rule}</div>`).join('')}</div>`).join('')}</div>`;
-    }
+    let arHtml = allPlayerRules?.length > 0 ? `<div class="statement-board"><strong>📋 所有规则：</strong>${allPlayerRules.map(p => `<div class="player-rules-card ${p.hasFalse?'false-holder':''}"><div style="font-weight:bold;">${p.nickname} ${p.hasFalse?'🔴假':'🟢真'}</div>${p.rules.map(r => `<div class="rule-detail ${r.isTrue?'true':'false'}">${r.isTrue?'✅':'❌'} ${r.rule}</div>`).join('')}</div>`).join('')}</div>` : '';
     $('resultContent').innerHTML = `<h4>${caseTitle}</h4>${vdHtml}${vHtml}${scoreHtml}${arHtml}<div class="final-score">正方 ${goodScore} : ${badScore} 反方</div><div class="winner-badge">🏆 ${winner} 获胜！</div><details><summary>推理链</summary><p>${reasoning}</p></details>`;
   });
 
   socket.on('errorMessage', msg => alert(msg));
 
-  // ==================== 按钮事件 ====================
-  $('matchBtn').addEventListener('click', () => {
-    const n = $('nicknameInput').value.trim(); if (!n) return alert('输入昵称');
-    socket.emit('startMatch', { nickname: n });
-  });
+  // ========== 按钮事件 ==========
+  $('matchBtn').addEventListener('click', () => { const n=$('nicknameInput').value.trim(); if(!n)return alert('输入昵称'); socket.emit('startMatch',{nickname:n}); });
   $('cancelMatchBtn').addEventListener('click', () => { socket.emit('cancelMatch'); });
-  $('joinBtn').addEventListener('click', () => {
-    const n = $('nicknameInput').value.trim(); if (!n) return alert('输入昵称');
-    socket.emit('joinRoom', { nickname: n, roomId: $('roomIdInput').value.trim() || null });
-  });
-  $('nicknameInput').addEventListener('keypress', e => { if (e.key==='Enter') $('joinBtn').click(); });
-  $('startGameBtn').addEventListener('click', () => { if (state.players.length < 2) return alert('至少2人'); socket.emit('startGame', { roomId: state.roomId }); });
-  $('addOneBot').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 1 }));
-  $('addTwoBots').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 2 }));
-  $('addThreeBots').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 3 }));
-  $('removeBotsBtn').addEventListener('click', () => socket.emit('removeBots', { roomId: state.roomId }));
-
-  $('readyToStatementBtn').addEventListener('click', function() { if (this.disabled) return; this.disabled = true; this.textContent = '等待...'; socket.emit('readyToStatement', { roomId: state.roomId }); });
-  window.selectRule = function(i) { if (state.hasSubmittedStatement) return; state.hasSubmittedStatement = true; document.querySelectorAll('#statementRulesList .rule-item').forEach((el,j) => { el.classList.toggle('selected', j===i); el.classList.add('submitted'); }); socket.emit('submitStatement', { roomId: state.roomId, rule: state.myRules[i].rule }); $('statementStatus').textContent = '已提交，等待其他人...'; $('statementWaitingNotice').style.display = 'block'; };
-  $('sendChatBtn').addEventListener('click', () => { const m = $('chatInput').value.trim(); if (!m) return; socket.emit('chatMessage', { roomId: state.roomId, message: m }); $('chatInput').value = ''; });
-  $('chatInput').addEventListener('keypress', e => { if (e.key==='Enter') $('sendChatBtn').click(); });
-  $('readyToAccusationBtn').addEventListener('click', function() { if (this.disabled) return; this.disabled = true; this.textContent = '等待...'; socket.emit('readyToAccusation', { roomId: state.roomId }); });
-  $('forceAccusationBtn').addEventListener('click', () => socket.emit('forceAccusation', { roomId: state.roomId }));
-
-  $('submitAccusationBtn').addEventListener('click', function() {
-    if (state.hasSubmittedAccusation) return;
-    const checkedBoxes = document.querySelectorAll('.false-checkbox:checked');
-    const falsePlayerIds = Array.from(checkedBoxes).map(cb => cb.value);
-    if (falsePlayerIds.length !== state.requiredSelectCount) return alert(`必须选择正好 ${state.requiredSelectCount} 位假规则持有者`);
-    const mg = $('murdererSelect').value; if (!mg) return alert('请选择凶手');
-    this.disabled = true; this.textContent = '已提交'; state.hasSubmittedAccusation = true;
-    socket.emit('submitAccusation', { roomId: state.roomId, falsePlayerIds, murdererGuess: mg });
-    $('accusationStatus').textContent = '已提交，等待其他人...'; $('accusationWaitingNotice').style.display = 'block';
-  });
-
-  $('backToLobbyBtn').addEventListener('click', () => { socket.emit('returnToLobby', { roomId: state.roomId }); clearChat(); resetAllState(); });
-  $('leaveRoomBtn').addEventListener('click', () => { socket.emit('leaveRoom', { roomId: state.roomId }); document.getElementById('gameScreen').classList.remove('active'); document.getElementById('loginScreen').classList.add('active'); clearChat(); resetAllState(); });
+  $('joinBtn').addEventListener('click', () => { const n=$('nicknameInput').value.trim(); if(!n)return alert('输入昵称'); socket.emit('joinRoom',{nickname:n,roomId:$('roomIdInput').value.trim()||null}); });
+  $('nicknameInput').addEventListener('keypress', e => { if(e.key==='Enter')$('joinBtn').click(); });
+  $('startGameBtn').addEventListener('click', () => { if(state.players.length<2)return alert('至少2人'); socket.emit('startGame',{roomId:state.roomId}); });
+  $('roomMatchBtn').addEventListener('click', () => { socket.emit('startRoomMatch',{roomId:state.roomId}); });
+  $('cancelRoomMatchBtn').addEventListener('click', () => { socket.emit('cancelRoomMatch',{roomId:state.roomId}); });
+  $('addOneBot').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:1}));
+  $('addTwoBots').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:2}));
+  $('addThreeBots').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:3}));
+  $('removeBotsBtn').addEventListener('click', () => socket.emit('removeBots',{roomId:state.roomId}));
+  $('readyToStatementBtn').addEventListener('click', function(){if(this.disabled)return;this.disabled=true;this.textContent='等待...';socket.emit('readyToStatement',{roomId:state.roomId});});
+  window.selectRule = function(i){if(state.hasSubmittedStatement)return;state.hasSubmittedStatement=true;document.querySelectorAll('#statementRulesList .rule-item').forEach((el,j)=>{el.classList.toggle('selected',j===i);el.classList.add('submitted');});socket.emit('submitStatement',{roomId:state.roomId,rule:state.myRules[i].rule});$('statementStatus').textContent='已提交，等待其他人...';$('statementWaitingNotice').style.display='block';};
+  $('sendChatBtn').addEventListener('click',()=>{const m=$('chatInput').value.trim();if(!m)return;socket.emit('chatMessage',{roomId:state.roomId,message:m});$('chatInput').value='';});
+  $('chatInput').addEventListener('keypress',e=>{if(e.key==='Enter')$('sendChatBtn').click();});
+  $('readyToAccusationBtn').addEventListener('click',function(){if(this.disabled)return;this.disabled=true;this.textContent='等待...';socket.emit('readyToAccusation',{roomId:state.roomId});});
+  $('forceAccusationBtn').addEventListener('click',()=>socket.emit('forceAccusation',{roomId:state.roomId}));
+  $('submitAccusationBtn').addEventListener('click',function(){if(state.hasSubmittedAccusation)return;const checkedBoxes=document.querySelectorAll('.false-checkbox:checked');const falsePlayerIds=Array.from(checkedBoxes).map(cb=>cb.value);if(falsePlayerIds.length!==state.requiredSelectCount)return alert(`必须选择正好 ${state.requiredSelectCount} 位假规则持有者`);const mg=$('murdererSelect').value;if(!mg)return alert('请选择凶手');this.disabled=true;this.textContent='已提交';state.hasSubmittedAccusation=true;socket.emit('submitAccusation',{roomId:state.roomId,falsePlayerIds,murdererGuess:mg});$('accusationStatus').textContent='已提交，等待其他人...';$('accusationWaitingNotice').style.display='block';});
+  $('backToLobbyBtn').addEventListener('click',()=>{socket.emit('returnToLobby',{roomId:state.roomId});clearChat();resetAllState();});
+  $('leaveRoomBtn').addEventListener('click',()=>{socket.emit('leaveRoom',{roomId:state.roomId});document.getElementById('gameScreen').classList.remove('active');document.getElementById('loginScreen').classList.add('active');clearChat();resetAllState();});
 </script>
 </body>
 </html>
