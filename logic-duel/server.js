@@ -60,7 +60,9 @@ async function generateCase(playerCount) {
   const prompt = `生成一个原创推理案件。输出纯JSON。
 
 硬性要求：
-- 3个嫌疑人，名字要有创意和多样性（如：沈雨薇、韩志远、秦小曼、杜老板、叶警官等），不要重复使用张三李四王五这种名字
+- 3个嫌疑人，名字由你随机创造，必须有中文特色且不重复
+- 禁止使用以下名字或变体：张三、李四、王五、赵六、小明、小红、小刚、小美、阿强、老王、老张、老李
+- 凶手必须是这3个嫌疑人之一，从suspects数组中直接选
 - 每个嫌疑人名字必须在至少2条规则中出现
 - 严格${trueCount}条真规则，${falseCount}条假规则
 - 每条规则≤18字，简洁有力
@@ -68,7 +70,7 @@ async function generateCase(playerCount) {
 - 假规则要与真规则形成微妙矛盾，但不能是直接否定句
 - 推理链要严谨，每一步都有依据
 
-{"caseTitle":"≤8字","caseDescription":"≤35字","suspects":["创意名1","创意名2","创意名3"],"murderer":"凶手名","trueRules":["规则"...共${trueCount}条],"falseRules":["规则"...共${falseCount}条],"reasoning":"≤80字严谨推理链"}`;
+{"caseTitle":"≤8字","caseDescription":"≤35字","suspects":["随机名1","随机名2","随机名3"],"murderer":"必须是suspects中的一个","trueRules":["规则"...共${trueCount}条],"falseRules":["规则"...共${falseCount}条],"reasoning":"≤80字严谨推理链"}`;
 
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
@@ -138,11 +140,7 @@ function botSelectStatement(botRules) {
 // ==================== 强力清理AI回复 ====================
 function cleanBotReply(reply, hasFalse) {
   if (!reply) return '';
-  // 去掉所有引号
-  reply = reply.replace(/["'""''「」『』]/g, '');
-  // 去掉首尾空格
-  reply = reply.trim();
-  // 如果含有非中文非标点的字母，且字母占比超过30%，则整句丢弃
+  reply = reply.replace(/["'""''「」『』]/g, '').trim();
   const chineseChars = (reply.match(/[\u4e00-\u9fa5]/g) || []).length;
   const letterChars = (reply.match(/[a-zA-Z]/g) || []).length;
   const totalChars = reply.length;
@@ -152,12 +150,9 @@ function cleanBotReply(reply, hasFalse) {
       : ["线索指向很明显。", "让我再想想看。", "关键证据已经有了。", "我觉得差不多了。"];
     return fallbacks[Math.floor(Math.random() * fallbacks.length)];
   }
-  // 去掉残留的英文单词和乱码
   reply = reply.replace(/\b[a-zA-Z]+\b/g, '').replace(/\s+/g, ' ').trim();
   if (reply.length < 3 || !/[\u4e00-\u9fa5]/.test(reply)) {
-    const fallbacks = hasFalse
-      ? ["我记不太清了。", "那不重要吧。"]
-      : ["线索指向很明显。", "让我再想想。"];
+    const fallbacks = hasFalse ? ["我记不太清了。", "那不重要吧。"] : ["线索指向很明显。", "让我再想想。"];
     return fallbacks[Math.floor(Math.random() * fallbacks.length)];
   }
   return reply;
@@ -194,9 +189,7 @@ async function generateBotDiscussionLine(botName, botRules, hasFalse, statements
   if (!API_KEY) return hasFalse ? "我觉得没那么简单。" : "关键线索出现了。";
   const myRulesText = botRules.map(r => `(${r.isTrue ? '真' : '假'})${r.rule}`).join(';');
   const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const winCondition = hasFalse
-    ? "你的目标：误导大家。可以撒谎、歪曲事实。"
-    : "你的目标：找出真相。分析逻辑矛盾。";
+  const winCondition = hasFalse ? "你的目标：误导大家。可以撒谎、歪曲事实。" : "你的目标：找出真相。分析逻辑矛盾。";
   const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。规则:${myRulesText}。公开:${statementsText}。${winCondition}用纯中文发表一句推理，≤20字。不要有任何英文。`;
 
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -534,23 +527,36 @@ io.on('connection', (socket) => {
     const correctFH = falseHolders.map(id => (room.players.get(id) || room.bots.get(id))?.nickname).filter(Boolean);
     const falseCount = correctFH.length;
     const selectedNames = Object.entries(fv).filter(([_, count]) => count >= maj).map(([name]) => name);
-    let correctCount = 0, wrongCount = 0, missedCount = 0;
+    
+    let correctCount = 0, missedCount = 0;
+    
     if (selectedNames.length === falseCount) {
-      for (const name of selectedNames) { if (correctFH.includes(name)) correctCount++; else wrongCount++; }
-      for (const name of correctFH) { if (!selectedNames.includes(name)) missedCount++; }
-    } else { wrongCount = selectedNames.length; missedCount = falseCount; }
+      for (const name of selectedNames) {
+        if (correctFH.includes(name)) correctCount++;
+      }
+      for (const name of correctFH) {
+        if (!selectedNames.includes(name)) missedCount++;
+      }
+    } else {
+      missedCount = falseCount;
+    }
+    
     const falseGoodScore = correctCount;
-    const falseBadScore = wrongCount + missedCount;
+    const falseBadScore = missedCount;
+    
     const topM = Object.entries(mv).sort((a, b) => b[1] - a[1])[0]?.[0];
     const mOk = topM === realM && (mv[topM] || 0) >= maj;
     const murdererGoodScore = mOk ? 1 : 0;
     const murdererBadScore = mOk ? 0 : 1;
+    
     const goodScore = falseGoodScore + murdererGoodScore;
     const badScore = falseBadScore + murdererBadScore;
+    
     const vd = room.accusations.map(a => ({ nickname: a.nickname, votedFalsePlayer: (a.falsePlayerIds || []).map(id => (room.players.get(id) || room.bots.get(id))?.nickname || '?').join(', '), votedMurderer: a.murdererGuess, isBot: a.isBot || false }));
     const apr = [];
     room.playerAssignments.forEach(a => { const p = room.players.get(a.playerId); apr.push({ nickname: p?.nickname || '?', hasFalse: a.hasFalse, rules: a.rules.map(r => ({ rule: r.rule, isTrue: r.isTrue })) }); });
     room.botAssignments.forEach(a => { const b = room.bots.get(a.botId); apr.push({ nickname: b?.nickname || '?', hasFalse: a.hasFalse, rules: a.rules.map(r => ({ rule: r.rule, isTrue: r.isTrue })) }); });
+    
     room.phase = 'result';
     io.to(roomId).emit('gameResult', {
       falseHolders: correctFH, realMurderer: realM, goodScore, badScore,
@@ -558,7 +564,7 @@ io.on('connection', (socket) => {
       reasoning: room.caseData.reasoning, caseTitle: room.caseData.caseTitle,
       allPlayerRules: apr, falseVotes: fv, murdererVotes: mv, majority: maj,
       falseCorrect: falseGoodScore, murdererCorrect: mOk, voteDetails: vd,
-      correctCount, wrongCount, missedCount, falseCount
+      correctCount, wrongCount: selectedNames.length - correctCount, missedCount, falseCount
     });
     room.caseData = null; room.playerAssignments = []; room.botAssignments = [];
     room.statements = []; room.accusations = []; room.discussReady = new Set();
