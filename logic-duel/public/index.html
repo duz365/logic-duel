@@ -62,6 +62,8 @@
     .rule-item.own-choice { border-color:#4a8a6a; background:#1a2a20; }
     .rule-item.readonly { cursor:default; }
     .rule-item.readonly:hover { border-color:transparent; }
+    .rule-item.submitted { opacity:0.5; cursor:default; }
+    .rule-item.submitted:hover { border-color:transparent; }
     .my-rule-tag {
       display: inline-block;
       background: #1a2a38;
@@ -141,6 +143,28 @@
       margin-left: 4px;
       color: #c0a0e0;
     }
+    .vote-stats {
+      background: #1a2838;
+      border-radius: 8px;
+      padding: 10px;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+    .vote-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: #2e4456;
+      margin: 4px 0;
+      overflow: hidden;
+    }
+    .vote-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: #5a8a6a;
+    }
+    .vote-bar-fill.majority {
+      background: #c49b4a;
+    }
   </style>
 </head>
 <body>
@@ -151,7 +175,7 @@
     <input type="text" id="nicknameInput" placeholder="输入昵称">
     <input type="text" id="roomIdInput" placeholder="房间号 (留空创建)">
     <button id="joinBtn">进入房间</button>
-    <div style="text-align:center;font-size:12px;color:#6a8a9a;">2-4人 · 逻辑对抗 · 支持人机补位</div>
+    <div style="text-align:center;font-size:12px;color:#6a8a9a;">2-6人 · 逻辑对抗 · 支持人机补位</div>
   </div>
 
   <!-- 游戏 -->
@@ -167,7 +191,6 @@
     <div id="hostControls" style="display:none;">
       <button id="startGameBtn" class="gold">▶ 开始游戏</button>
       
-      <!-- 人机面板 -->
       <div class="bot-panel" style="margin-top:8px;">
         <div style="font-size:12px; color:#8a9a6a; margin-bottom:6px;">🤖 人机设置（人数不够时使用）</div>
         <div class="btn-row">
@@ -206,14 +229,14 @@
         </div>
       </div>
 
-      <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击下方一条规则将其公开（不可说谎，即使假规则也照原话公开）</div>
+      <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击下方一条规则提交（所有人提交后才公布）</div>
       <div id="statementRulesList"></div>
-
+      <div id="statementStatus" style="color:#8a9a6a;font-size:13px;white-space:pre-wrap;margin-top:4px;"></div>
+      
       <div class="statement-board" id="statementBoard" style="display:none;">
-        <strong style="font-size:13px;">📢 已公开的规则：</strong>
+        <strong style="font-size:13px;">📢 所有人已提交，公开的规则如下：</strong>
         <div id="statementEntries"></div>
       </div>
-      <div id="statementStatus" style="color:#8a9a6a;font-size:13px;white-space:pre-wrap;margin-top:4px;"></div>
     </div>
 
     <!-- 讨论阶段 -->
@@ -252,6 +275,11 @@
       <div style="margin-top:8px;"><label>凶手是谁？</label><select id="murdererSelect"></select></div>
       <button id="submitAccusationBtn" class="danger" style="margin-top:8px;">提交指控</button>
       <div id="accusationStatus" style="font-size:13px;color:#8a9a6a;text-align:center;"></div>
+      
+      <div class="vote-stats" id="voteStats" style="display:none;">
+        <strong style="font-size:13px;">📊 投票统计</strong>
+        <div id="voteStatsContent"></div>
+      </div>
     </div>
 
     <!-- 结果 -->
@@ -268,7 +296,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], selectedRuleIndex:null, hasSubmitted:false, currentStatements:[], botCount:0 };
+  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], selectedRuleIndex:null, hasSubmitted:false, currentStatements:[], botCount:0, hasSubmittedStatement:false, hasSubmittedAccusation:false };
 
   const $ = id => document.getElementById(id);
 
@@ -277,6 +305,7 @@
     $('phaseDisplay').textContent = msg || phase;
     ['readingPhase','statementPhase','discussPhase','accusationPhase','resultPhase'].forEach(p => $(p).style.display='none');
     $('forceAccusationBtn').style.display = 'none';
+    $('voteStats').style.display = 'none';
     updateHostUI();
     if (phase==='reading') $('readingPhase').style.display='block';
     if (phase==='statement') $('statementPhase').style.display='block';
@@ -341,6 +370,8 @@
     clearChat();
     state.currentStatements = [];
     state.hasFalseRule = false;
+    state.hasSubmittedStatement = false;
+    state.hasSubmittedAccusation = false;
     $('falseWarning').style.display = 'none';
     setPhase(phase);
     resetUIState();
@@ -366,7 +397,8 @@
   }
 
   function resetUIState() {
-    state.hasSubmitted = false;
+    state.hasSubmittedStatement = false;
+    state.hasSubmittedAccusation = false;
     state.selectedRuleIndex = null;
     $('readyToStatementBtn').disabled = false;
     $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
@@ -379,8 +411,13 @@
     $('statementBoard').style.display = 'none';
     $('discussStatementBoard').style.display = 'none';
     $('forceAccusationBtn').style.display = 'none';
+    $('voteStats').style.display = 'none';
     $('readyToAccusationBtn').disabled = false;
     $('readyToAccusationBtn').textContent = '我准备好了，进入指控';
+    // 重置规则选择状态
+    document.querySelectorAll('#statementRulesList .rule-item').forEach(el => {
+      el.classList.remove('selected', 'own-choice', 'submitted');
+    });
   }
 
   socket.on('playerListUpdate', updatePlayers);
@@ -413,9 +450,13 @@
     if (phase === 'reading') {
       clearChat();
       state.currentStatements = [];
+      state.hasSubmittedStatement = false;
       if (state.hasFalseRule) {
         $('falseWarning').style.display = 'block';
       }
+    }
+    if (phase === 'accusation') {
+      state.hasSubmittedAccusation = false;
     }
     if (state.myRules.length > 0) {
       renderMyRules('statementMyRulesContent');
@@ -428,7 +469,7 @@
     state.hasFalseRule = hasFalseRule || false;
     state.suspects = suspects;
     state.selectedRuleIndex = null;
-    state.hasSubmitted = false;
+    state.hasSubmittedStatement = false;
     
     $('caseInfo').innerHTML = `<strong>${caseTitle}</strong><br><small>${caseDescription}</small>`;
     $('yourRulesList').innerHTML = rules.map(r => `<div class="rule-item readonly">📌 ${r.rule}</div>`).join('');
@@ -459,11 +500,19 @@
     $('discussProgress').textContent = text;
   });
 
+  socket.on('statementSubmitProgress', ({ submitted, total }) => {
+    $('statementStatus').textContent = `已提交: ${submitted}/${total}，等待所有人提交后公布...`;
+  });
+
   socket.on('statementUpdate', (statements) => {
     state.currentStatements = statements;
     $('statementBoard').style.display = 'block';
     renderStatementBoard(statements, 'statementEntries');
-    $('statementStatus').textContent = statements.map(s => `${s.nickname}: "${s.rule}"`).join('\n');
+    $('statementStatus').textContent = '所有人已提交！规则已公布。';
+    // 标记所有规则为已提交状态
+    document.querySelectorAll('#statementRulesList .rule-item').forEach(el => {
+      el.classList.add('submitted');
+    });
   });
 
   socket.on('chatMessage', ({ from, message }) => addChat(`${from}: ${message}`));
@@ -477,7 +526,30 @@
     addChat('[系统] ⏰ 讨论时间已到，房主可强制推进', true);
   });
 
-  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules }) => {
+  socket.on('voteResult', ({ falseVotes, murdererVotes, totalPlayers, majority }) => {
+    $('voteStats').style.display = 'block';
+    let html = `<p style="margin-bottom:6px;">需要过半数(${majority}票)才算正确</p>`;
+    
+    html += '<p style="margin-top:6px;"><strong>假规则持有者投票:</strong></p>';
+    for (const [name, count] of Object.entries(falseVotes)) {
+      const pct = Math.round(count / totalPlayers * 100);
+      const reached = count >= majority;
+      html += `<div>${name}: ${count}票 ${reached ? '✅' : ''}</div>`;
+      html += `<div class="vote-bar"><div class="vote-bar-fill ${reached ? 'majority' : ''}" style="width:${pct}%"></div></div>`;
+    }
+    
+    html += '<p style="margin-top:8px;"><strong>凶手投票:</strong></p>';
+    for (const [name, count] of Object.entries(murdererVotes)) {
+      const pct = Math.round(count / totalPlayers * 100);
+      const reached = count >= majority;
+      html += `<div>${name}: ${count}票 ${reached ? '✅' : ''}</div>`;
+      html += `<div class="vote-bar"><div class="vote-bar-fill ${reached ? 'majority' : ''}" style="width:${pct}%"></div></div>`;
+    }
+    
+    $('voteStatsContent').innerHTML = html;
+  });
+
+  socket.on('gameResult', ({ results, falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority }) => {
     setPhase('result', '🏆 游戏结束');
     
     let allRulesHtml = '';
@@ -500,25 +572,36 @@
         </div>
       `;
     }
+
+    // 投票统计
+    let voteHtml = '';
+    if (falseVotes && murdererVotes) {
+      voteHtml = `
+        <div class="vote-stats" style="margin-bottom:10px;">
+          <strong style="font-size:13px;">📊 投票统计 (过半数=${majority}票)</strong>
+          <p style="margin-top:4px;"><strong>假规则持有者投票:</strong></p>
+          ${Object.entries(falseVotes).map(([name, count]) => {
+            const reached = count >= majority;
+            return `<div>${name}: ${count}票 ${reached ? '✅ 过半数' : '❌ 未过半'}</div>`;
+          }).join('')}
+          <p style="margin-top:6px;"><strong>凶手投票:</strong></p>
+          ${Object.entries(murdererVotes).map(([name, count]) => {
+            const reached = count >= majority;
+            return `<div>${name}: ${count}票 ${reached ? '✅ 过半数' : '❌ 未过半'}</div>`;
+          }).join('')}
+        </div>
+      `;
+    }
     
     $('resultContent').innerHTML = `
       <h4>${caseTitle}</h4>
       <p><strong>真凶：</strong>${realMurderer}</p>
       <p><strong>持有假规则的玩家：</strong>${falseHolders.join(', ')}</p>
       <hr style="border-color:#2a3a4a; margin:8px 0;">
+      ${voteHtml}
       ${allRulesHtml}
       <hr style="border-color:#2a3a4a; margin:8px 0;">
-      ${results.map(r => `
-        <div class="result-row">
-          <span>${r.nickname}${r.isFalseHolder ? ' 🔴(假规则)' : ''}</span>
-          <span>
-            假规则:${r.guessedFalsePlayer} ${r.guessedFalseCorrect ? '✅' : '❌'} 
-            | 凶手:${r.guessedMurderer} ${r.guessedMurdererCorrect ? '✅' : '❌'}
-          </span>
-        </div>
-      `).join('')}
-      <hr style="border-color:#2a3a4a; margin:8px 0;">
-      <p style="text-align:center;"><strong>正方 ${goodScore} : ${badScore} 反方</strong></p>
+      <p style="text-align:center;"><strong>正方(推理者) ${goodScore} : ${badScore} 反方(扰乱者)</strong></p>
       <p style="text-align:center; font-size:1.1em; margin:8px 0;">🏆 <strong>${winner} 获胜！</strong></p>
       <details style="margin-top:8px;">
         <summary style="cursor:pointer; color:#c8a860;">查看完整推理链</summary>
@@ -546,7 +629,6 @@
     socket.emit('startGame', { roomId: state.roomId });
   });
 
-  // 人机按钮
   $('addOneBot').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 1 }));
   $('addTwoBots').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 2 }));
   $('addThreeBots').addEventListener('click', () => socket.emit('addBots', { roomId: state.roomId, count: 3 }));
@@ -561,16 +643,17 @@
   });
 
   window.selectRule = function(i) {
-    if (state.hasSubmitted) return;
+    if (state.hasSubmittedStatement) return;
     state.selectedRuleIndex = i;
-    state.hasSubmitted = true;
+    state.hasSubmittedStatement = true;
     document.querySelectorAll('#statementRulesList .rule-item').forEach((el,j) => {
       el.classList.toggle('selected', j===i);
       el.classList.toggle('own-choice', j===i);
+      el.classList.add('submitted');
     });
     const rule = state.myRules[i].rule;
     socket.emit('submitStatement', { roomId: state.roomId, rule });
-    $('statementStatus').textContent = '你已选择: "' + rule + '"\n等待其他玩家...';
+    $('statementStatus').textContent = '你已选择: "' + rule + '"\n等待其他玩家提交...';
   };
 
   $('sendChatBtn').addEventListener('click', () => {
@@ -596,12 +679,14 @@
   });
 
   $('submitAccusationBtn').addEventListener('click', function() {
+    if (state.hasSubmittedAccusation) return;
     const fp = $('falsePlayerSelect').value;
     const mg = $('murdererSelect').value;
     if (!fp || !mg) return alert('请完成所有选择');
     if (this.disabled) return;
     this.disabled = true;
     this.textContent = '已提交';
+    state.hasSubmittedAccusation = true;
     socket.emit('submitAccusation', { roomId: state.roomId, falsePlayerId: fp, murdererGuess: mg });
     $('accusationStatus').textContent = '已提交，等待其他玩家...';
   });
@@ -615,6 +700,8 @@
     state.myRules = [];
     state.hasFalseRule = false;
     state.botCount = 0;
+    state.hasSubmittedStatement = false;
+    state.hasSubmittedAccusation = false;
   });
 
   $('leaveRoomBtn').addEventListener('click', () => {
@@ -626,6 +713,8 @@
     state.myRules = [];
     state.hasFalseRule = false;
     state.botCount = 0;
+    state.hasSubmittedStatement = false;
+    state.hasSubmittedAccusation = false;
   });
 </script>
 </body>
