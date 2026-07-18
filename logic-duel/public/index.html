@@ -22,6 +22,8 @@
     button.success { background:#2a5a3a; }
     button.bot-btn { background:#3a4a6a; border:1px solid #5a6a8a; font-size:13px; }
     button.match-btn { background:#4a3a6a; border:1px solid #6a5a8a; }
+    button.match-active { background:#6a4a2a; border:2px solid #c49b4a; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { box-shadow:0 0 5px #c49b4a; } 50% { box-shadow:0 0 20px #e0b860; } }
     button.kick-btn { background:#5a2a2a; font-size:10px; padding:4px 8px; width:auto; border-radius:8px; }
     .card { background:#16202a; border-radius:14px; padding:14px; border:1px solid #253545; }
     .player-list { display:flex; flex-wrap:wrap; gap:6px; }
@@ -96,7 +98,7 @@
       <input type="text" id="roomIdInput" placeholder="房间号 (留空创建)">
       <button id="joinBtn" style="margin-top:4px;">进入房间</button>
     </div>
-    <div style="text-align:center;font-size:12px;color:#6a8a9a;">2-6人 · 逻辑对抗 · 支持人机补位</div>
+    <div style="text-align:center;font-size:12px;color:#6a8a9a;">2-8人 · 逻辑对抗 · 支持人机补位</div>
   </div>
 
   <div id="matchScreen" class="screen">
@@ -120,7 +122,7 @@
       <div class="btn-row">
         <button id="startGameBtn" class="gold" style="flex:2;">▶ 开始游戏</button>
         <button id="roomMatchBtn" class="match-btn" style="flex:1;">🔍 匹配</button>
-        <button id="cancelRoomMatchBtn" class="danger" style="flex:1; display:none;">取消匹配</button>
+        <button id="cancelRoomMatchBtn" class="danger" style="flex:1; display:none;">关闭匹配</button>
       </div>
       <div class="bot-panel" style="margin-top:8px;">
         <div style="font-size:12px;color:#8a9a6a;margin-bottom:6px;">🤖 人机设置</div>
@@ -219,8 +221,17 @@
     const show = state.isHost && state.phase === 'lobby';
     $('hostControls').style.display = show ? 'block' : 'none';
     if (show) {
-      $('roomMatchBtn').style.display = state.isRoomMatching ? 'none' : 'block';
-      $('cancelRoomMatchBtn').style.display = state.isRoomMatching ? 'block' : 'none';
+      if (state.isRoomMatching) {
+        $('roomMatchBtn').style.display = 'none';
+        $('cancelRoomMatchBtn').style.display = 'block';
+        $('roomMatchBtn').classList.remove('match-active');
+        $('cancelRoomMatchBtn').classList.add('match-active');
+      } else {
+        $('roomMatchBtn').style.display = 'block';
+        $('cancelRoomMatchBtn').style.display = 'none';
+        $('roomMatchBtn').classList.remove('match-active');
+        $('cancelRoomMatchBtn').classList.remove('match-active');
+      }
     }
   }
 
@@ -261,7 +272,7 @@
     state.players = players;
     state.botCount = players.filter(p => p.isBot).length;
     state.totalPlayers = players.length;
-    $('playerCount').textContent = `👥 ${players.length}人`;
+    $('playerCount').textContent = `👥 ${players.length}/8人`;
     $('playersList').innerHTML = players.map(p => {
       const canKick = state.isHost && state.phase === 'lobby' && p.id !== state.playerId && !p.isBot;
       const kickBtn = canKick ? `<button class="kick-btn" onclick="kickPlayer('${p.id}')">踢出</button>` : '';
@@ -272,6 +283,13 @@
     updateHostUI();
     $('botCountDisplay').textContent = `当前人机: ${state.botCount}`;
     if (state.phase === 'accusation') renderCheckboxes();
+    // 满员自动更新匹配状态
+    if (players.length >= 8 && state.isRoomMatching) {
+      $('roomMatchStatus').style.display = 'block';
+      $('roomMatchStatus').textContent = '✅ 房间已满，匹配自动关闭';
+      state.isRoomMatching = false;
+      updateHostUI();
+    }
   }
 
   window.kickPlayer = function(targetId) {
@@ -355,14 +373,22 @@
       state.isRoomMatching = true;
       $('roomMatchStatus').style.display = 'block';
       $('roomMatchStatus').textContent = '🔍 ' + message;
-      $('roomMatchBtn').style.display = 'none';
-      $('cancelRoomMatchBtn').style.display = 'block';
-    } else if (status === 'matched' || status === 'cancelled') {
+      updateHostUI();
+    } else if (status === 'matched') {
+      // 匹配到人，保持匹配状态
+      $('roomMatchStatus').style.display = 'block';
+      $('roomMatchStatus').textContent = '✅ ' + message;
+      // state.isRoomMatching 保持不变，继续匹配
+    } else if (status === 'cancelled') {
       state.isRoomMatching = false;
-      $('roomMatchStatus').style.display = status === 'matched' ? 'block' : 'none';
-      if (status === 'matched') $('roomMatchStatus').textContent = '✅ ' + message;
-      $('roomMatchBtn').style.display = 'block';
-      $('cancelRoomMatchBtn').style.display = 'none';
+      if (message) {
+        $('roomMatchStatus').style.display = 'block';
+        $('roomMatchStatus').textContent = message;
+        setTimeout(() => { $('roomMatchStatus').style.display = 'none'; }, 3000);
+      } else {
+        $('roomMatchStatus').style.display = 'none';
+      }
+      updateHostUI();
     }
   });
 
@@ -371,6 +397,7 @@
     document.getElementById('gameScreen').classList.remove('active');
     document.getElementById('loginScreen').classList.add('active');
     clearChat(); resetAllState();
+    state.isRoomMatching = false;
   });
 
   // ========== 房间系统 ==========
@@ -379,8 +406,6 @@
     state.isRoomMatching = false;
     $('roomCode').textContent = roomId;
     $('roomMatchStatus').style.display = 'none';
-    $('roomMatchBtn').style.display = 'block';
-    $('cancelRoomMatchBtn').style.display = 'none';
     updatePlayers(players);
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('gameScreen').classList.add('active');
@@ -390,7 +415,7 @@
   socket.on('playerListUpdate', updatePlayers);
 
   socket.on('phaseChange', ({ phase, message, suspectList, players, statements, totalPlayers, falseCount }) => {
-    if (phase === 'lobby') { setPhase('lobby', message || '等待房主开始...'); resetAllState(); clearChat(); if (players) updatePlayers(players); return; }
+    if (phase === 'lobby') { setPhase('lobby', message || '等待房主开始...'); resetAllState(); clearChat(); if (players) updatePlayers(players); state.isRoomMatching = false; updateHostUI(); return; }
     setPhase(phase, message);
     if (suspectList) { state.suspects = suspectList; $('murdererSelect').innerHTML = suspectList.map(s => `<option value="${s}">${s}</option>`).join(''); }
     if (players) updatePlayers(players);
@@ -457,8 +482,8 @@
   $('joinBtn').addEventListener('click', () => { const n=$('nicknameInput').value.trim(); if(!n)return alert('输入昵称'); socket.emit('joinRoom',{nickname:n,roomId:$('roomIdInput').value.trim()||null}); });
   $('nicknameInput').addEventListener('keypress', e => { if(e.key==='Enter')$('joinBtn').click(); });
   $('startGameBtn').addEventListener('click', () => { if(state.players.length<2)return alert('至少2人'); socket.emit('startGame',{roomId:state.roomId}); });
-  $('roomMatchBtn').addEventListener('click', () => { socket.emit('startRoomMatch',{roomId:state.roomId}); });
-  $('cancelRoomMatchBtn').addEventListener('click', () => { socket.emit('cancelRoomMatch',{roomId:state.roomId}); });
+  $('roomMatchBtn').addEventListener('click', () => { socket.emit('startRoomMatch',{roomId:state.roomId}); state.isRoomMatching = true; updateHostUI(); $('roomMatchStatus').style.display = 'block'; $('roomMatchStatus').textContent = '🔍 匹配已开启，等待玩家加入...'; });
+  $('cancelRoomMatchBtn').addEventListener('click', () => { socket.emit('cancelRoomMatch',{roomId:state.roomId}); state.isRoomMatching = false; updateHostUI(); $('roomMatchStatus').style.display = 'none'; });
   $('addOneBot').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:1}));
   $('addTwoBots').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:2}));
   $('addThreeBots').addEventListener('click', () => socket.emit('addBots',{roomId:state.roomId,count:3}));
@@ -470,8 +495,8 @@
   $('readyToAccusationBtn').addEventListener('click',function(){if(this.disabled)return;this.disabled=true;this.textContent='等待...';socket.emit('readyToAccusation',{roomId:state.roomId});});
   $('forceAccusationBtn').addEventListener('click',()=>socket.emit('forceAccusation',{roomId:state.roomId}));
   $('submitAccusationBtn').addEventListener('click',function(){if(state.hasSubmittedAccusation)return;const checkedBoxes=document.querySelectorAll('.false-checkbox:checked');const falsePlayerIds=Array.from(checkedBoxes).map(cb=>cb.value);if(falsePlayerIds.length!==state.requiredSelectCount)return alert(`必须选择正好 ${state.requiredSelectCount} 位假规则持有者`);const mg=$('murdererSelect').value;if(!mg)return alert('请选择凶手');this.disabled=true;this.textContent='已提交';state.hasSubmittedAccusation=true;socket.emit('submitAccusation',{roomId:state.roomId,falsePlayerIds,murdererGuess:mg});$('accusationStatus').textContent='已提交，等待其他人...';$('accusationWaitingNotice').style.display='block';});
-  $('backToLobbyBtn').addEventListener('click',()=>{socket.emit('returnToLobby',{roomId:state.roomId});clearChat();resetAllState();});
-  $('leaveRoomBtn').addEventListener('click',()=>{socket.emit('leaveRoom',{roomId:state.roomId});document.getElementById('gameScreen').classList.remove('active');document.getElementById('loginScreen').classList.add('active');clearChat();resetAllState();});
+  $('backToLobbyBtn').addEventListener('click',()=>{socket.emit('returnToLobby',{roomId:state.roomId});clearChat();resetAllState();state.isRoomMatching=false;updateHostUI();});
+  $('leaveRoomBtn').addEventListener('click',()=>{socket.emit('leaveRoom',{roomId:state.roomId});document.getElementById('gameScreen').classList.remove('active');document.getElementById('loginScreen').classList.add('active');clearChat();resetAllState();state.isRoomMatching=false;});
 </script>
 </body>
 </html>
