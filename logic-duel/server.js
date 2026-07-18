@@ -15,7 +15,7 @@ app.use(express.json());
 
 const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'Qwen/Qwen2-7B-Instruct';
+const MODEL = 'deepseek-ai/DeepSeek-V4-Flash';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
 const API_TIMEOUT = 25000;
 
