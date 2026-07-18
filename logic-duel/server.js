@@ -366,6 +366,7 @@ io.on('connection', (socket) => {
       if (ps) {
         ps.emit('yourRules', {
           rules: assignment.rules,
+          hasFalseRule: assignment.hasFalse,
           caseTitle: caseData.caseTitle,
           caseDescription: caseData.caseDescription,
           suspects: caseData.suspects
@@ -509,6 +510,19 @@ io.on('connection', (socket) => {
       }
     }
     
+    // 构建所有玩家的规则展示
+    const allPlayerRules = room.playerAssignments.map(a => {
+      const player = room.players.get(a.playerId);
+      return {
+        nickname: player?.nickname || '未知',
+        hasFalse: a.hasFalse,
+        rules: a.rules.map(r => ({
+          rule: r.rule,
+          isTrue: r.isTrue
+        }))
+      };
+    });
+    
     const winner = goodScore >= badScore ? '正方（推理者）' : '反方（误导者）';
     room.phase = 'result';
     
@@ -520,7 +534,8 @@ io.on('connection', (socket) => {
       badScore,
       winner,
       reasoning: caseData.reasoning,
-      caseTitle: caseData.caseTitle
+      caseTitle: caseData.caseTitle,
+      allPlayerRules
     });
   }
 
