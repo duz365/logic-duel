@@ -57,11 +57,15 @@
     .rule-item { background:#1a2838; border-radius:10px; padding:10px 14px; margin:4px 0; cursor:pointer; border:2px solid transparent; transition:all 0.2s; }
     .rule-item:hover { border-color:#4a6a8a; }
     .rule-item.selected { border-color:#c49b4a; background:#2a3020; cursor:default; }
+    .rule-item.own-choice { border-color:#4a8a6a; background:#1a2a20; }
     .result-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #253545; font-size:13px; }
     .correct { color:#5ac85a; } .wrong { color:#c85a5a; }
     .btn-row { display:flex; gap:8px; } .btn-row button { flex:1; }
     .timer { font-size:12px; color:#8a9ab0; text-align:center; }
     select { background:#1a2632; color:#d0dde8; }
+    .statement-board { background:#0d141c; border-radius:10px; padding:10px; margin-top:8px; }
+    .statement-entry { padding:6px 0; border-bottom:1px solid #1e2a34; font-size:13px; }
+    .statement-entry:last-child { border-bottom:none; }
   </style>
 </head>
 <body>
@@ -96,11 +100,20 @@
     <div id="statementPhase" style="display:none;" class="card">
       <h3>📢 选择一条规则公开</h3>
       <div id="statementRulesList"></div>
-      <div id="statementStatus" style="color:#8a9a6a;font-size:13px;white-space:pre-wrap;"></div>
+      <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击一条规则将其公开（不可说谎，即使假规则也照原话公开）</div>
+      <div class="statement-board" id="statementBoard" style="display:none;">
+        <strong style="font-size:13px;">📋 已公开的规则：</strong>
+        <div id="statementEntries"></div>
+      </div>
+      <div id="statementStatus" style="color:#8a9a6a;font-size:13px;white-space:pre-wrap;margin-top:4px;"></div>
     </div>
 
     <div id="discussPhase" style="display:none;" class="card">
       <h3>💬 自由讨论</h3>
+      <div class="statement-board" id="discussStatementBoard" style="display:none;">
+        <strong style="font-size:13px;">📋 已公开的规则：</strong>
+        <div id="discussStatementEntries"></div>
+      </div>
       <div class="messages" id="chatMessages"></div>
       <div class="btn-row">
         <input type="text" id="chatInput" placeholder="发表推理...">
@@ -132,7 +145,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], suspects:[], selectedRuleIndex:null, hasSubmitted:false };
+  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], suspects:[], selectedRuleIndex:null, hasSubmitted:false, currentStatements:[] };
 
   const $ = id => document.getElementById(id);
 
@@ -141,6 +154,7 @@
     $('phaseDisplay').textContent = msg || phase;
     ['readingPhase','statementPhase','discussPhase','accusationPhase','resultPhase'].forEach(p => $(p).style.display='none');
     $('startGameBtn').style.display = (state.isHost && phase==='lobby') ? 'block' : 'none';
+    $('forceAccusationBtn').style.display = 'none';
     if (phase==='reading') $('readingPhase').style.display='block';
     if (phase==='statement') $('statementPhase').style.display='block';
     if (phase==='discuss') $('discussPhase').style.display='block';
@@ -156,17 +170,28 @@
     $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   }
 
+  function clearChat() {
+    $('chatMessages').innerHTML = '';
+  }
+
+  function renderStatementBoard(statements, targetId) {
+    const container = $(targetId);
+    if (!container) return;
+    container.innerHTML = statements.map(s => 
+      `<div class="statement-entry"><strong>${s.nickname}:</strong> "${s.rule}"</div>`
+    ).join('');
+  }
+
   socket.on('roomJoined', ({ roomId, playerId, players, phase, isHost }) => {
     state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
     $('roomCode').textContent = roomId;
     updatePlayers(players);
     document.getElementById('loginScreen').classList.remove('active');
     document.getElementById('gameScreen').classList.add('active');
+    clearChat();
+    state.currentStatements = [];
     setPhase(phase);
-    // 重置阅读状态
-    state.hasSubmitted = false;
-    $('readyToStatementBtn').disabled = false;
-    $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
+    resetUIState();
   });
 
   function updatePlayers(players) {
@@ -176,15 +201,32 @@
     const me = players.find(p => p.id===state.playerId);
     state.isHost = me?.isHost || false;
     $('startGameBtn').style.display = (state.isHost && state.phase==='lobby') ? 'block' : 'none';
-    // 更新指控阶段的玩家列表
     if (state.phase === 'accusation') {
       $('falsePlayerSelect').innerHTML = players.filter(p => p.id!==state.playerId).map(p => `<option value="${p.id}">${p.nickname}</option>`).join('');
     }
   }
 
+  function resetUIState() {
+    state.hasSubmitted = false;
+    state.selectedRuleIndex = null;
+    $('readyToStatementBtn').disabled = false;
+    $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
+    $('submitAccusationBtn').disabled = false;
+    $('submitAccusationBtn').textContent = '提交指控';
+    $('readingStatus').textContent = '';
+    $('statementStatus').textContent = '';
+    $('accusationStatus').textContent = '';
+    $('discussProgress').textContent = '';
+    $('statementBoard').style.display = 'none';
+    $('discussStatementBoard').style.display = 'none';
+    $('forceAccusationBtn').style.display = 'none';
+    $('readyToAccusationBtn').disabled = false;
+    $('readyToAccusationBtn').textContent = '我准备好了，进入指控';
+  }
+
   socket.on('playerListUpdate', updatePlayers);
 
-  socket.on('phaseChange', ({ phase, message, suspectList, players }) => {
+  socket.on('phaseChange', ({ phase, message, suspectList, players, statements }) => {
     setPhase(phase, message);
     if (suspectList) {
       state.suspects = suspectList;
@@ -193,11 +235,28 @@
     if (players) {
       updatePlayers(players);
     }
-    // 重置状态
-    state.hasSubmitted = false;
-    $('readyToStatementBtn').disabled = false;
-    $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
-    $('submitAccusationBtn').disabled = false;
+    if (statements) {
+      state.currentStatements = statements;
+      // 在陈述阶段显示
+      $('statementBoard').style.display = 'block';
+      renderStatementBoard(statements, 'statementEntries');
+      // 在讨论阶段也显示
+      $('discussStatementBoard').style.display = 'block';
+      renderStatementBoard(statements, 'discussStatementEntries');
+    }
+    resetUIState();
+    if (phase === 'discuss') {
+      clearChat();
+      addChat('[系统] 💬 讨论阶段开始，请分析逻辑矛盾。全员同意后进入指控。', true);
+      if (state.currentStatements.length > 0) {
+        $('discussStatementBoard').style.display = 'block';
+        renderStatementBoard(state.currentStatements, 'discussStatementEntries');
+      }
+    }
+    if (phase === 'reading') {
+      clearChat();
+      state.currentStatements = [];
+    }
   });
 
   socket.on('yourRules', ({ rules, caseTitle, caseDescription, suspects }) => {
@@ -222,7 +281,11 @@
   });
 
   socket.on('statementUpdate', (statements) => {
-    $('statementStatus').textContent = '已公开的规则：\n' + statements.map(s => `${s.nickname}: "${s.rule}"`).join('\n');
+    state.currentStatements = statements;
+    // 在陈述阶段显示
+    $('statementBoard').style.display = 'block';
+    renderStatementBoard(statements, 'statementEntries');
+    $('statementStatus').textContent = statements.map(s => `${s.nickname}: "${s.rule}"`).join('\n');
   });
 
   socket.on('chatMessage', ({ from, message }) => addChat(`${from}: ${message}`));
@@ -280,25 +343,22 @@
     socket.emit('startGame', { roomId: state.roomId });
   });
 
-  // ===== 关键修复：阅读完毕按钮 =====
   $('readyToStatementBtn').addEventListener('click', function() {
-    console.log('点击了阅读完毕按钮');
-    if (this.disabled) {
-      console.log('按钮已被禁用，忽略点击');
-      return;
-    }
+    if (this.disabled) return;
     this.disabled = true;
     this.textContent = '等待其他玩家...';
     $('readingStatus').textContent = '已确认，等待其他玩家...';
     socket.emit('readyToStatement', { roomId: state.roomId });
   });
 
-  // 陈述阶段选择规则
   window.selectRule = function(i) {
     if (state.hasSubmitted) return;
     state.selectedRuleIndex = i;
     state.hasSubmitted = true;
-    document.querySelectorAll('#statementRulesList .rule-item').forEach((el,j) => el.classList.toggle('selected', j===i));
+    document.querySelectorAll('#statementRulesList .rule-item').forEach((el,j) => {
+      el.classList.toggle('selected', j===i);
+      el.classList.toggle('own-choice', j===i);
+    });
     const rule = state.myRules[i].rule;
     socket.emit('submitStatement', { roomId: state.roomId, rule });
     $('statementStatus').textContent = '你已选择: "' + rule + '"\n等待其他玩家...';
@@ -341,26 +401,17 @@
     socket.emit('leaveRoom', { roomId: state.roomId });
     document.getElementById('gameScreen').classList.remove('active');
     document.getElementById('loginScreen').classList.add('active');
-    resetState();
+    clearChat();
+    state.currentStatements = [];
   });
 
   $('leaveRoomBtn').addEventListener('click', () => {
     socket.emit('leaveRoom', { roomId: state.roomId });
     document.getElementById('gameScreen').classList.remove('active');
     document.getElementById('loginScreen').classList.add('active');
-    resetState();
+    clearChat();
+    state.currentStatements = [];
   });
-
-  function resetState() {
-    state.phase = 'lobby';
-    state.hasSubmitted = false;
-    state.myRules = [];
-    state.selectedRuleIndex = null;
-    $('readyToStatementBtn').disabled = false;
-    $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
-    $('submitAccusationBtn').disabled = false;
-    $('submitAccusationBtn').textContent = '提交指控';
-  }
 </script>
 </body>
 </html>
