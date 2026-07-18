@@ -101,7 +101,10 @@
     .checkbox-label { display:flex; align-items:center; gap:6px; font-size:13px; background:#1a2632; border-radius:8px; padding:8px 12px; cursor:pointer; border:1px solid #2e4456; }
     .checkbox-label input { width:auto; margin:0; }
     .checkbox-label.checked { border-color:#c49b4a; background:#2a3020; }
+    .checkbox-label.disabled { opacity:0.4; pointer-events:none; }
     .info-text { font-size:11px; color:#8a9a6a; margin-top:2px; }
+    .info-text.warning { color:#c8a860; }
+    .selection-counter { text-align:center; font-size:13px; color:#c8a860; margin-top:4px; }
   </style>
 </head>
 <body>
@@ -176,9 +179,10 @@
 
     <div id="accusationPhase" style="display:none;" class="card">
       <h3>⚖️ 最终指控</h3>
-      <div><label>谁持有假规则？（可多选）</label>
+      <div>
+        <label>谁持有假规则？（<strong>必须选正好 <span id="requiredSelectCount">1</span> 位</strong>）</label>
         <div id="falsePlayerCheckboxes" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;"></div>
-        <div id="falseCountHint" class="info-text"></div>
+        <div class="selection-counter" id="selectionCounter">已选: 0 / 需要选: 1</div>
       </div>
       <div style="margin-top:8px;"><label>凶手是谁？</label><select id="murdererSelect"></select></div>
       <button id="submitAccusationBtn" class="danger" style="margin-top:8px;">提交指控</button>
@@ -200,7 +204,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], currentStatements:[], botCount:0, hasSubmittedStatement:false, hasSubmittedAccusation:false, totalPlayers:0, falseRuleCount:0 };
+  const state = { roomId:'', playerId:'', isHost:false, phase:'lobby', players:[], myRules:[], hasFalseRule:false, suspects:[], currentStatements:[], botCount:0, hasSubmittedStatement:false, hasSubmittedAccusation:false, totalPlayers:0, falseRuleCount:0, requiredSelectCount:1 };
 
   const $ = id => document.getElementById(id);
 
@@ -210,7 +214,6 @@
     ['readingPhase','statementPhase','discussPhase','accusationPhase','resultPhase'].forEach(p => $(p).style.display='none');
     $('forceAccusationBtn').style.display = 'none';
     updateHostUI();
-    if (phase==='lobby') { /* 大厅状态 */ }
     if (phase==='reading') $('readingPhase').style.display='block';
     if (phase==='statement') $('statementPhase').style.display='block';
     if (phase==='discuss') $('discussPhase').style.display='block';
@@ -250,10 +253,13 @@
   function resetAllState() {
     state.currentStatements = []; state.hasFalseRule = false; state.hasSubmittedStatement = false;
     state.hasSubmittedAccusation = false; state.totalPlayers = 0; state.falseRuleCount = 0; state.myRules = [];
+    state.requiredSelectCount = 1;
     $('falseWarning').style.display = 'none'; $('statementBoard').style.display = 'none';
     $('statementBoard').classList.add('hidden-rules'); $('voteStats').style.display = 'none';
     $('voteStats').classList.add('hidden-rules'); $('statementWaitingNotice').style.display = 'none';
-    $('accusationWaitingNotice').style.display = 'none'; $('falseCountHint').textContent = '';
+    $('accusationWaitingNotice').style.display = 'none';
+    $('requiredSelectCount').textContent = '1';
+    $('selectionCounter').textContent = '已选: 0 / 需要选: 1';
   }
 
   function updatePlayers(players) {
@@ -269,15 +275,56 @@
     updateHostUI();
     $('botCountDisplay').textContent = `当前人机: ${state.botCount}`;
     if (state.phase === 'accusation') {
-      const checkboxesHtml = players.filter(p => p.id !== state.playerId).map(p => 
-        `<label class="checkbox-label" data-id="${p.id}"><input type="checkbox" value="${p.id}" class="false-checkbox" onchange="updateCheckboxStyle(this)"> ${p.nickname}${p.isBot ? ' 🤖' : ''}</label>`
-      ).join('');
-      $('falsePlayerCheckboxes').innerHTML = checkboxesHtml;
-      if (state.falseRuleCount > 0) $('falseCountHint').textContent = `提示：本轮有 ${state.falseRuleCount} 位假规则持有者，请选择 ${state.falseRuleCount} 位`;
+      renderCheckboxes();
     }
   }
 
-  window.updateCheckboxStyle = function(cb) { cb.parentElement.classList.toggle('checked', cb.checked); };
+  function renderCheckboxes() {
+    const others = state.players.filter(p => p.id !== state.playerId);
+    const checkboxesHtml = others.map(p => 
+      `<label class="checkbox-label" data-id="${p.id}">
+        <input type="checkbox" value="${p.id}" class="false-checkbox" onchange="onCheckboxChange()"> ${p.nickname}${p.isBot ? ' 🤖' : ''}
+      </label>`
+    ).join('');
+    $('falsePlayerCheckboxes').innerHTML = checkboxesHtml;
+    $('requiredSelectCount').textContent = state.requiredSelectCount;
+    updateSelectionCounter();
+  }
+
+  window.onCheckboxChange = function() {
+    const checked = document.querySelectorAll('.false-checkbox:checked');
+    const maxSelect = state.requiredSelectCount;
+    
+    // 如果选中数量超过限制，取消最后一个选中
+    if (checked.length > maxSelect) {
+      const lastChecked = checked[checked.length - 1];
+      lastChecked.checked = false;
+    }
+    
+    // 更新样式
+    document.querySelectorAll('.false-checkbox').forEach(cb => {
+      const label = cb.parentElement;
+      label.classList.toggle('checked', cb.checked);
+      // 如果已经选了足够数量，禁用未选中的
+      if (checked.length >= maxSelect && !cb.checked) {
+        label.classList.add('disabled');
+      } else {
+        label.classList.remove('disabled');
+      }
+    });
+    
+    updateSelectionCounter();
+  };
+
+  function updateSelectionCounter() {
+    const checked = document.querySelectorAll('.false-checkbox:checked');
+    $('selectionCounter').textContent = `已选: ${checked.length} / 需要选: ${state.requiredSelectCount}`;
+    if (checked.length === state.requiredSelectCount) {
+      $('selectionCounter').className = 'selection-counter';
+    } else {
+      $('selectionCounter').className = 'selection-counter warning';
+    }
+  }
 
   function resetUIState() {
     state.hasSubmittedStatement = false; state.hasSubmittedAccusation = false;
@@ -307,8 +354,7 @@
   socket.on('phaseChange', ({ phase, message, suspectList, players, statements, totalPlayers, falseCount }) => {
     if (phase === 'lobby') {
       setPhase('lobby', message || '等待房主开始...');
-      resetAllState();
-      clearChat();
+      resetAllState(); clearChat();
       if (players) updatePlayers(players);
       return;
     }
@@ -316,7 +362,12 @@
     if (suspectList) { state.suspects = suspectList; $('murdererSelect').innerHTML = suspectList.map(s => `<option value="${s}">${s}</option>`).join(''); }
     if (players) updatePlayers(players);
     if (totalPlayers) state.totalPlayers = totalPlayers;
-    if (falseCount !== undefined) state.falseRuleCount = falseCount;
+    if (falseCount !== undefined) {
+      state.falseRuleCount = falseCount;
+      state.requiredSelectCount = falseCount;
+      $('requiredSelectCount').textContent = falseCount;
+      updateSelectionCounter();
+    }
     resetUIState();
     if (phase === 'statement') { $('statementBoard').style.display = 'none'; $('statementBoard').classList.add('hidden-rules'); state.currentStatements = []; }
     if (phase === 'discuss') {
@@ -324,7 +375,12 @@
       if (statements?.length > 0) { state.currentStatements = statements; $('discussStatementBoard').style.display = 'block'; renderStatementBoard(statements, 'discussStatementEntries'); }
     }
     if (phase === 'reading') { clearChat(); state.currentStatements = []; state.hasSubmittedStatement = false; if (state.hasFalseRule) $('falseWarning').style.display = 'block'; }
-    if (phase === 'accusation') { state.hasSubmittedAccusation = false; $('voteStats').style.display = 'none'; $('voteStats').classList.add('hidden-rules'); $('accusationWaitingNotice').style.display = 'none'; }
+    if (phase === 'accusation') {
+      state.hasSubmittedAccusation = false;
+      $('voteStats').style.display = 'none'; $('voteStats').classList.add('hidden-rules');
+      $('accusationWaitingNotice').style.display = 'none';
+      renderCheckboxes();
+    }
     if (state.myRules.length > 0) { renderMyRules('statementMyRulesContent'); renderMyRules('discussMyRulesContent'); }
   });
 
@@ -385,24 +441,34 @@
 
   socket.on('discussTimeout', () => { if (state.isHost) $('forceAccusationBtn').style.display = 'block'; addChat('[系统] ⏰ 讨论时间已到', true); });
 
-  socket.on('gameResult', ({ falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, falseCorrect, murdererCorrect, voteDetails }) => {
+  socket.on('gameResult', ({ falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, falseCorrect, murdererCorrect, voteDetails, correctCount, wrongCount, missedCount, falseCount }) => {
     setPhase('result', '🏆 游戏结束');
     let vdHtml = '';
     if (voteDetails?.length > 0) {
       vdHtml = `<div class="vote-detail-board"><strong>🗳️ 每位玩家的投票：</strong>${voteDetails.map(v => `<div class="vote-detail-row"><span>${v.nickname}${v.isBot?' 🤖':''}</span><span>假→${v.votedFalsePlayer} | 凶→${v.votedMurderer}</span></div>`).join('')}</div>`;
     }
+    // 详细计分
+    let scoreDetailHtml = '';
+    if (falseCount !== undefined) {
+      scoreDetailHtml = `<div class="vote-result-board" style="margin-top:8px;">
+        <strong>📊 假规则计分详情 (需选正好${falseCount}人)</strong>
+        <p style="margin-top:4px;">✅ 正确选中: ${correctCount||0}人 → 推理方 +${correctCount||0}分</p>
+        <p>❌ 错误选中: ${wrongCount||0}人 → 扰乱方 +${wrongCount||0}分</p>
+        <p>🔍 漏选: ${missedCount||0}人 → 扰乱方 +${missedCount||0}分</p>
+        <p style="margin-top:4px;">🔪 凶手: ${murdererCorrect ? '✅正确 → 推理方+1分' : '❌错误 → 扰乱方+1分'}</p>
+      </div>`;
+    }
     let vHtml = '';
     if (falseVotes && murdererVotes) {
       vHtml = `<div class="vote-result-board"><strong>📊 投票汇总 (过半数=${majority}票)</strong>
-        <p style="margin-top:6px;">🔍 假规则: ${falseCorrect ? '<span class="correct">✅正确</span>' : '<span class="wrong">❌错误</span>'} (实际: ${falseHolders.join(', ')})</p>
-        <p>🔪 凶手: ${murdererCorrect ? '<span class="correct">✅正确</span>' : '<span class="wrong">❌错误</span>'} (实际: ${realMurderer})</p>
-        <p style="font-size:11px;color:#8a9a6a;">每项过半数正确→正方+1，否则反方+1</p></div>`;
+        <p style="margin-top:6px;">实际假规则持有者: ${falseHolders.join(', ')}</p>
+        <p>实际凶手: ${realMurderer}</p></div>`;
     }
     let arHtml = '';
     if (allPlayerRules?.length > 0) {
       arHtml = `<div class="statement-board"><strong>📋 所有规则：</strong>${allPlayerRules.map(p => `<div class="player-rules-card ${p.hasFalse?'false-holder':''}"><div style="font-weight:bold;">${p.nickname} ${p.hasFalse?'🔴假':'🟢真'}</div>${p.rules.map(r => `<div class="rule-detail ${r.isTrue?'true':'false'}">${r.isTrue?'✅':'❌'} ${r.rule}</div>`).join('')}</div>`).join('')}</div>`;
     }
-    $('resultContent').innerHTML = `<h4>${caseTitle}</h4>${vdHtml}${vHtml}${arHtml}<div class="final-score">正方 ${goodScore} : ${badScore} 反方</div><div class="winner-badge">🏆 ${winner} 获胜！</div><details><summary>推理链</summary><p>${reasoning}</p></details>`;
+    $('resultContent').innerHTML = `<h4>${caseTitle}</h4>${vdHtml}${vHtml}${scoreDetailHtml}${arHtml}<div class="final-score">正方 ${goodScore} : ${badScore} 反方</div><div class="winner-badge">🏆 ${winner} 获胜！</div><details><summary>推理链</summary><p>${reasoning}</p></details>`;
   });
 
   socket.on('errorMessage', msg => alert(msg));
@@ -437,7 +503,7 @@
     if (state.hasSubmittedAccusation) return;
     const checkedBoxes = document.querySelectorAll('.false-checkbox:checked');
     const falsePlayerIds = Array.from(checkedBoxes).map(cb => cb.value);
-    if (falsePlayerIds.length === 0) return alert('请至少选择一位假规则持有者');
+    if (falsePlayerIds.length !== state.requiredSelectCount) return alert(`必须选择正好 ${state.requiredSelectCount} 位假规则持有者`);
     const mg = $('murdererSelect').value; if (!mg) return alert('请选择凶手');
     this.disabled = true; this.textContent = '已提交'; state.hasSubmittedAccusation = true;
     socket.emit('submitAccusation', { roomId: state.roomId, falsePlayerIds, murdererGuess: mg });
