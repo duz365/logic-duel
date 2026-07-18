@@ -125,45 +125,166 @@ function botSelectStatement(botRules) {
   return botRules[Math.floor(Math.random() * botRules.length)].rule;
 }
 
+// ==================== 清理AI回复 ====================
+function cleanBotReply(reply, hasFalse) {
+  if (!reply) return '';
+  reply = reply
+    .replace(/^["'""'']|["'""'']$/g, '')
+    .replace(/[^\u4e00-\u9fa5a-zA-Z0-9，。！？、；：\s\-_.]/g, '')
+    .trim();
+  if (reply.length < 3 || !/[\u4e00-\u9fa5]/.test(reply)) {
+    const fallbacks = hasFalse 
+      ? ["我记不太清了。", "那不重要吧。", "别纠结细节。"]
+      : ["线索指向很明显。", "让我再想想。", "关键证据已经有了。"];
+    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+  }
+  return reply;
+}
+
+// ==================== 规则压缩（兜底，不截断） ====================
+function manualCompress(text) {
+  if (!text) return '';
+  text = text.replace(/["'""'']/g, '').replace(/\s+/g, ' ').trim();
+  const punctuations = ['。', '！', '？', '，', '；', '、', '：'];
+  for (const p of punctuations) {
+    const idx = text.indexOf(p);
+    if (idx > 4 && idx <= 22) return text.substring(0, idx + 1);
+  }
+  if (text.length > 20) {
+    const sub = text.substring(0, 20);
+    const lastSpace = sub.lastIndexOf(' ');
+    return lastSpace > 4 ? sub.substring(0, lastSpace) : sub;
+  }
+  return text;
+}
+
+// ==================== AI压缩回复 ====================
+async function compressReply(longReply, botName) {
+  if (!API_KEY) return manualCompress(longReply);
+  
+  const prompt = `精简下面这句话到20字以内，保留核心意思。只输出精简后的句子。\n"${longReply}"`;
+  
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 5000);
+      const r = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+        body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: 40 }),
+        signal: c.signal
+      });
+      clearTimeout(t);
+      const d = await r.json();
+      let compressed = d.choices[0].message.content.trim();
+      compressed = cleanBotReply(compressed, false);
+      if (compressed && compressed.length >= 3 && compressed.length <= 25 && /[\u4e00-\u9fa5]/.test(compressed)) return compressed;
+      if (compressed.length > 25) return await compressReply(compressed, botName);
+    } catch (e) { /* 重试 */ }
+  }
+  return manualCompress(longReply);
+}
+
 // ==================== 人机讨论发言 ====================
 async function generateBotDiscussionLine(botName, botRules, hasFalse, statements, suspects, caseDescription, realMurderer) {
   if (!API_KEY) return hasFalse ? "我觉得没那么简单。" : "关键线索出现了。";
+  
   const myTrueRules = botRules.filter(r => r.isTrue).map(r => r.rule).join(';');
   const myFalseRules = botRules.filter(r => !r.isTrue).map(r => r.rule).join(';');
   const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
   const winCondition = hasFalse 
-    ? `胜利条件：误导大家。真凶是${realMurderer}。你可以撒谎、歪曲、转移话题。`
+    ? `胜利条件：误导大家。真凶是${realMurderer}。可以撒谎、歪曲、转移话题。`
     : `胜利条件：找出真相。引导大家正确指认假规则持有者和真凶${realMurderer}。`;
 
   const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。真规则:${myTrueRules}。${myFalseRules?'假规则:'+myFalseRules:''}。公开规则:${statementsText}。${winCondition}发言≤20字。`;
 
-  try {
-    const c = new AbortController(); const t = setTimeout(() => c.abort(), 10000);
-    const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:'Qwen/Qwen2.5-7B-Instruct', messages:[{role:'user',content:prompt}], temperature:0.95, max_tokens:60 }), signal:c.signal });
-    clearTimeout(t); const d = await r.json(); return d.choices[0].message.content.trim();
-  } catch (e) { return hasFalse ? "别想太多。" : "这条线索重要。"; }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 10000);
+      const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:'Qwen/Qwen2.5-7B-Instruct', messages:[{role:'user',content:prompt}], temperature:0.95, max_tokens:60 }), signal:c.signal });
+      clearTimeout(t); const d = await r.json();
+      let line = d.choices[0].message.content.trim();
+      line = cleanBotReply(line, hasFalse);
+      if (line && line.length >= 3 && /[\u4e00-\u9fa5]/.test(line)) {
+        if (line.length > 25) line = await compressReply(line, botName);
+        return line;
+      }
+    } catch (e) { /* 重试 */ }
+  }
+  return hasFalse ? "别想太多。" : "这条线索重要。";
 }
 
 // ==================== 人机回复玩家 ====================
 async function generateBotReply(botName, botRules, hasFalse, statements, suspects, caseDescription, realMurderer, playerMessage) {
-  if (!API_KEY) return hasFalse ? "不一定。" : "同意。";
-  const myTrueRules = botRules.filter(r => r.isTrue).map(r => r.rule).join(';');
-  const myFalseRules = botRules.filter(r => !r.isTrue).map(r => r.rule).join(';');
+  if (!API_KEY) {
+    const lines = hasFalse ? ["我不太确定。", "我记不太清了。"] : ["线索指向很明显。", "关键证据已经有了。"];
+    return lines[Math.floor(Math.random() * lines.length)];
+  }
+  
+  const myAllRules = botRules.map(r => r.rule);
+  const myUnrevealedRules = myAllRules.filter(r => !statements.some(s => s.rule === r));
   const statementsText = statements.map(s => `${s.nickname}:"${s.rule}"`).join(';');
-  const winCondition = hasFalse ? `胜利条件：误导。真凶${realMurderer}。可撒谎。` : `胜利条件：推理。真凶${realMurderer}。`;
+  const isAskingAboutRule = /规则|线索|另一条|还有什么|告诉我|你知道|你掌握|你的/.test(playerMessage);
+  
+  let ruleInstruction = '';
+  if (isAskingAboutRule && myUnrevealedRules.length > 0) {
+    if (hasFalse) {
+      const fakeRuleOptions = [
+        `"${suspects[Math.floor(Math.random()*suspects.length)]}在案发时有不在场证明"`,
+        `"现场没有找到任何可疑物品"`,
+        `"监控显示一切正常"`,
+        `"死者没有挣扎痕迹"`,
+        `"${suspects[0]}和${suspects[1]}当时在一起"`
+      ];
+      ruleInstruction = `玩家在问你的规则。你是扰乱者，可以撒谎。编造一条不存在的规则，比如：${fakeRuleOptions[Math.floor(Math.random()*fakeRuleOptions.length)]}。`;
+    } else {
+      const realRule = myUnrevealedRules[Math.floor(Math.random() * myUnrevealedRules.length)];
+      ruleInstruction = `玩家在问你的规则。你是推理者，必须诚实。你未公开的规则："${myUnrevealedRules.join('"、"')}"。如实说出其中一条，比如："${realRule}"。`;
+    }
+  }
+  
+  const winCondition = hasFalse 
+    ? `立场：扰乱者。真凶是${realMurderer}。误导大家，可以撒谎。`
+    : `立场：推理者。真凶是${realMurderer}。必须诚实，帮大家推理。`;
 
-  const prompt = `"${botName}"。有人说:"${playerMessage}"。案件:${caseDescription}。真规则:${myTrueRules}。${myFalseRules?'假:'+myFalseRules:''}。公开:${statementsText}。${winCondition}回复≤15字。`;
+  const prompt = `你是"${botName}"。案件:${caseDescription}。嫌疑人:${suspects.join(',')}。
+你公开的规则:${statements.filter(s => s.nickname === botName).map(s => s.rule).join(';') || '无'}
+未公开:${myUnrevealedRules.join(';') || '无'}
+公开规则:${statementsText}
+${ruleInstruction}
+${winCondition}
+有人说:"${playerMessage}"
+用中文回复，15-25字，简洁自然。如果超过25字请精简后再说。只输出回复。`;
 
-  try {
-    const c = new AbortController(); const t = setTimeout(() => c.abort(), 8000);
-    const r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${API_KEY}`}, body:JSON.stringify({ model:'Qwen/Qwen2.5-7B-Instruct', messages:[{role:'user',content:prompt}], temperature:0.9, max_tokens:50 }), signal:c.signal });
-    clearTimeout(t); const d = await r.json(); return d.choices[0].message.content.trim();
-  } catch (e) { return hasFalse ? "再想想。" : "我同意。"; }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 8000);
+      const r = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+        body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct', messages: [{ role: 'user', content: prompt }], temperature: 0.7, max_tokens: 100 }),
+        signal: c.signal
+      });
+      clearTimeout(t);
+      const d = await r.json();
+      let reply = d.choices[0].message.content.trim();
+      reply = cleanBotReply(reply, hasFalse);
+      if (reply && reply.length >= 3 && /[\u4e00-\u9fa5]/.test(reply)) {
+        if (reply.length > 30) reply = await compressReply(reply, botName);
+        return reply;
+      }
+    } catch (e) { /* 重试 */ }
+  }
+  
+  if (isAskingAboutRule && myUnrevealedRules.length > 0 && !hasFalse) {
+    return myUnrevealedRules[Math.floor(Math.random() * myUnrevealedRules.length)];
+  }
+  return hasFalse ? "我记不太清了。" : "线索指向很明显。";
 }
 
 // ==================== 人机投票（多选） ====================
 function botMakeAccusation(botRules, players, falseHolderCandidates, suspects, hasFalse, realMurderer) {
-  const falseCount = Math.min(falseHolderCandidates.length, 1);
   let guessedFalsePlayers = [];
   
   if (hasFalse) {
@@ -241,12 +362,8 @@ io.on('connection', (socket) => {
     room.phase = 'preparing'; room.statementSubmitted = new Set();
     io.to(roomId).emit('phaseChange', { phase: 'preparing', message: 'AI生成案件中...' });
     
-    try {
-      room.caseData = await generateCase(totalPlayers);
-    } catch (e) {
-      socket.emit('errorMessage', '案件生成失败，请重试。');
-      room.phase = 'lobby'; return;
-    }
+    try { room.caseData = await generateCase(totalPlayers); }
+    catch (e) { socket.emit('errorMessage', '案件生成失败，请重试。'); room.phase = 'lobby'; return; }
     
     const { falseCount } = getRuleCounts(totalPlayers);
     const assignments = assignRules(room.caseData.trueRules, room.caseData.falseRules, totalPlayers);
@@ -446,7 +563,6 @@ io.on('connection', (socket) => {
     const falseHolders = room.playerAssignments.filter(a => a.hasFalse).map(a => a.playerId).concat(room.botAssignments.filter(a => a.hasFalse).map(a => a.botId));
     const correctFH = falseHolders.map(id => (room.players.get(id) || room.bots.get(id))?.nickname).filter(Boolean);
     
-    // 多选判定：所有真·假规则持有者都必须过半数，且没有冤假错案
     let fOk = true;
     for (const name of correctFH) { if ((fv[name] || 0) < maj) { fOk = false; break; } }
     for (const [name, count] of Object.entries(fv)) { if (count >= maj && !correctFH.includes(name)) { fOk = false; break; } }
