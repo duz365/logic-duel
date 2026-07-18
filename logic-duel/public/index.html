@@ -58,14 +58,48 @@
     .rule-item:hover { border-color:#4a6a8a; }
     .rule-item.selected { border-color:#c49b4a; background:#2a3020; cursor:default; }
     .rule-item.own-choice { border-color:#4a8a6a; background:#1a2a20; }
+    .rule-item.readonly { cursor:default; }
+    .rule-item.readonly:hover { border-color:transparent; }
+    .my-rule-tag {
+      display: inline-block;
+      background: #1a2a38;
+      border: 1px solid #2e4456;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      margin: 2px;
+    }
+    .my-rule-tag.false-rule {
+      border-color: #8b3a3a;
+      background: #2a1a1a;
+      color: #d08a8a;
+    }
     .result-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #253545; font-size:13px; }
     .correct { color:#5ac85a; } .wrong { color:#c85a5a; }
     .btn-row { display:flex; gap:8px; } .btn-row button { flex:1; }
     .timer { font-size:12px; color:#8a9ab0; text-align:center; }
     select { background:#1a2632; color:#d0dde8; }
-    .statement-board { background:#0d141c; border-radius:10px; padding:10px; margin-top:8px; }
+    .statement-board, .my-rules-board {
+      background:#0d141c;
+      border-radius:10px;
+      padding:10px;
+      margin-top:8px;
+    }
     .statement-entry { padding:6px 0; border-bottom:1px solid #1e2a34; font-size:13px; }
     .statement-entry:last-child { border-bottom:none; }
+    .collapsible-header {
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size:13px;
+      color:#8a9ab0;
+      padding: 4px 0;
+    }
+    .collapsible-header:hover { color:#b0c0d0; }
+    .collapsible-body { margin-top:6px; }
+    .arrow { transition: transform 0.2s; display: inline-block; }
+    .arrow.open { transform: rotate(90deg); }
   </style>
 </head>
 <body>
@@ -89,6 +123,7 @@
     <div class="player-list" id="playersList"></div>
     <button id="startGameBtn" class="gold" style="display:none;">▶ 开始游戏</button>
 
+    <!-- 阅读阶段 -->
     <div id="readingPhase" style="display:none;" class="card">
       <h3>📖 你的规则手册</h3>
       <div id="caseInfo"></div>
@@ -97,23 +132,53 @@
       <div id="readingStatus" style="font-size:12px;color:#8a9a6a;text-align:center;margin-top:4px;"></div>
     </div>
 
+    <!-- 陈述阶段 -->
     <div id="statementPhase" style="display:none;" class="card">
       <h3>📢 选择一条规则公开</h3>
+      
+      <!-- 我的规则 -->
+      <div class="my-rules-board" id="statementMyRules">
+        <div class="collapsible-header" onclick="toggleCollapse('statementMyRulesBody', this)">
+          <span>📋 我持有的规则 (点击展开/收起)</span>
+          <span class="arrow open" id="statementMyRulesArrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="statementMyRulesBody">
+          <div id="statementMyRulesContent"></div>
+        </div>
+      </div>
+
+      <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击下方一条规则将其公开（不可说谎，即使假规则也照原话公开）</div>
       <div id="statementRulesList"></div>
-      <div style="font-size:12px;color:#8a9a6a;margin-top:4px;">点击一条规则将其公开（不可说谎，即使假规则也照原话公开）</div>
+
+      <!-- 已公开规则 -->
       <div class="statement-board" id="statementBoard" style="display:none;">
-        <strong style="font-size:13px;">📋 已公开的规则：</strong>
+        <strong style="font-size:13px;">📢 已公开的规则：</strong>
         <div id="statementEntries"></div>
       </div>
       <div id="statementStatus" style="color:#8a9a6a;font-size:13px;white-space:pre-wrap;margin-top:4px;"></div>
     </div>
 
+    <!-- 讨论阶段 -->
     <div id="discussPhase" style="display:none;" class="card">
       <h3>💬 自由讨论</h3>
+
+      <!-- 我的规则 -->
+      <div class="my-rules-board" id="discussMyRules">
+        <div class="collapsible-header" onclick="toggleCollapse('discussMyRulesBody', this)">
+          <span>📋 我持有的规则 (点击展开/收起)</span>
+          <span class="arrow open" id="discussMyRulesArrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="discussMyRulesBody">
+          <div id="discussMyRulesContent"></div>
+        </div>
+      </div>
+
+      <!-- 已公开规则 -->
       <div class="statement-board" id="discussStatementBoard" style="display:none;">
-        <strong style="font-size:13px;">📋 已公开的规则：</strong>
+        <strong style="font-size:13px;">📢 已公开的规则：</strong>
         <div id="discussStatementEntries"></div>
       </div>
+
       <div class="messages" id="chatMessages"></div>
       <div class="btn-row">
         <input type="text" id="chatInput" placeholder="发表推理...">
@@ -124,6 +189,7 @@
       <div id="discussProgress" style="font-size:12px;color:#8a9a6a;text-align:center;"></div>
     </div>
 
+    <!-- 指控阶段 -->
     <div id="accusationPhase" style="display:none;" class="card">
       <h3>⚖️ 最终指控</h3>
       <div><label>谁持有假规则？</label><select id="falsePlayerSelect"></select></div>
@@ -132,6 +198,7 @@
       <div id="accusationStatus" style="font-size:13px;color:#8a9a6a;text-align:center;"></div>
     </div>
 
+    <!-- 结果 -->
     <div id="resultPhase" style="display:none;" class="card">
       <h3>🏆 游戏结果</h3>
       <div id="resultContent"></div>
@@ -181,6 +248,28 @@
       `<div class="statement-entry"><strong>${s.nickname}:</strong> "${s.rule}"</div>`
     ).join('');
   }
+
+  function renderMyRules(targetId) {
+    const container = $(targetId);
+    if (!container || !state.myRules.length) return;
+    container.innerHTML = state.myRules.map((r, i) => {
+      // 不标注真假，玩家自己也不知道
+      return `<span class="my-rule-tag">📌 ${r.rule}</span>`;
+    }).join('');
+  }
+
+  function toggleCollapse(bodyId, headerEl) {
+    const body = document.getElementById(bodyId);
+    const arrow = headerEl.querySelector('.arrow');
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      if (arrow) arrow.classList.add('open');
+    } else {
+      body.style.display = 'none';
+      if (arrow) arrow.classList.remove('open');
+    }
+  }
+  window.toggleCollapse = toggleCollapse;
 
   socket.on('roomJoined', ({ roomId, playerId, players, phase, isHost }) => {
     state.roomId = roomId; state.playerId = playerId; state.isHost = isHost;
@@ -237,10 +326,8 @@
     }
     if (statements) {
       state.currentStatements = statements;
-      // 在陈述阶段显示
       $('statementBoard').style.display = 'block';
       renderStatementBoard(statements, 'statementEntries');
-      // 在讨论阶段也显示
       $('discussStatementBoard').style.display = 'block';
       renderStatementBoard(statements, 'discussStatementEntries');
     }
@@ -257,6 +344,11 @@
       clearChat();
       state.currentStatements = [];
     }
+    // 重新渲染我的规则
+    if (state.myRules.length > 0) {
+      renderMyRules('statementMyRulesContent');
+      renderMyRules('discussMyRulesContent');
+    }
   });
 
   socket.on('yourRules', ({ rules, caseTitle, caseDescription, suspects }) => {
@@ -266,12 +358,22 @@
     state.hasSubmitted = false;
     
     $('caseInfo').innerHTML = `<strong>${caseTitle}</strong><br><small>${caseDescription}</small>`;
-    $('yourRulesList').innerHTML = rules.map(r => `<div class="rule-item">📌 ${r.rule}</div>`).join('');
+    $('yourRulesList').innerHTML = rules.map(r => `<div class="rule-item readonly">📌 ${r.rule}</div>`).join('');
     $('statementRulesList').innerHTML = rules.map((r,i) => `<div class="rule-item" data-index="${i}" onclick="selectRule(${i})">📌 ${r.rule}</div>`).join('');
     $('murdererSelect').innerHTML = suspects.map(s => `<option value="${s}">${s}</option>`).join('');
     $('readyToStatementBtn').disabled = false;
     $('readyToStatementBtn').textContent = '我已阅读完毕，进入陈述阶段';
     $('readingStatus').textContent = '';
+    
+    // 渲染我的规则到各处
+    renderMyRules('statementMyRulesContent');
+    renderMyRules('discussMyRulesContent');
+    
+    // 默认展开
+    $('statementMyRulesBody').style.display = 'block';
+    $('statementMyRulesArrow').classList.add('open');
+    $('discussMyRulesBody').style.display = 'block';
+    $('discussMyRulesArrow').classList.add('open');
   });
 
   socket.on('readyProgress', ({ ready, total }) => {
@@ -282,7 +384,6 @@
 
   socket.on('statementUpdate', (statements) => {
     state.currentStatements = statements;
-    // 在陈述阶段显示
     $('statementBoard').style.display = 'block';
     renderStatementBoard(statements, 'statementEntries');
     $('statementStatus').textContent = statements.map(s => `${s.nickname}: "${s.rule}"`).join('\n');
@@ -403,6 +504,7 @@
     document.getElementById('loginScreen').classList.add('active');
     clearChat();
     state.currentStatements = [];
+    state.myRules = [];
   });
 
   $('leaveRoomBtn').addEventListener('click', () => {
@@ -411,6 +513,7 @@
     document.getElementById('loginScreen').classList.add('active');
     clearChat();
     state.currentStatements = [];
+    state.myRules = [];
   });
 </script>
 </body>
