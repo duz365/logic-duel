@@ -176,8 +176,7 @@
 
     <div id="accusationPhase" style="display:none;" class="card">
       <h3>⚖️ 最终指控</h3>
-      <div>
-        <label>谁持有假规则？（可多选）</label>
+      <div><label>谁持有假规则？（可多选）</label>
         <div id="falsePlayerCheckboxes" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;"></div>
         <div id="falseCountHint" class="info-text"></div>
       </div>
@@ -211,6 +210,7 @@
     ['readingPhase','statementPhase','discussPhase','accusationPhase','resultPhase'].forEach(p => $(p).style.display='none');
     $('forceAccusationBtn').style.display = 'none';
     updateHostUI();
+    if (phase==='lobby') { /* 大厅状态 */ }
     if (phase==='reading') $('readingPhase').style.display='block';
     if (phase==='statement') $('statementPhase').style.display='block';
     if (phase==='discuss') $('discussPhase').style.display='block';
@@ -249,7 +249,7 @@
 
   function resetAllState() {
     state.currentStatements = []; state.hasFalseRule = false; state.hasSubmittedStatement = false;
-    state.hasSubmittedAccusation = false; state.totalPlayers = 0; state.falseRuleCount = 0;
+    state.hasSubmittedAccusation = false; state.totalPlayers = 0; state.falseRuleCount = 0; state.myRules = [];
     $('falseWarning').style.display = 'none'; $('statementBoard').style.display = 'none';
     $('statementBoard').classList.add('hidden-rules'); $('voteStats').style.display = 'none';
     $('voteStats').classList.add('hidden-rules'); $('statementWaitingNotice').style.display = 'none';
@@ -268,25 +268,16 @@
     state.isHost = me?.isHost || false;
     updateHostUI();
     $('botCountDisplay').textContent = `当前人机: ${state.botCount}`;
-    
     if (state.phase === 'accusation') {
       const checkboxesHtml = players.filter(p => p.id !== state.playerId).map(p => 
-        `<label class="checkbox-label" data-id="${p.id}">
-          <input type="checkbox" value="${p.id}" class="false-checkbox" onchange="updateCheckboxStyle(this)"> ${p.nickname}${p.isBot ? ' 🤖' : ''}
-        </label>`
+        `<label class="checkbox-label" data-id="${p.id}"><input type="checkbox" value="${p.id}" class="false-checkbox" onchange="updateCheckboxStyle(this)"> ${p.nickname}${p.isBot ? ' 🤖' : ''}</label>`
       ).join('');
       $('falsePlayerCheckboxes').innerHTML = checkboxesHtml;
-      if (state.falseRuleCount > 0) {
-        $('falseCountHint').textContent = `提示：本轮有 ${state.falseRuleCount} 位假规则持有者，请选择 ${state.falseRuleCount} 位`;
-      }
+      if (state.falseRuleCount > 0) $('falseCountHint').textContent = `提示：本轮有 ${state.falseRuleCount} 位假规则持有者，请选择 ${state.falseRuleCount} 位`;
     }
   }
 
-  window.updateCheckboxStyle = function(cb) {
-    const label = cb.parentElement;
-    if (cb.checked) label.classList.add('checked');
-    else label.classList.remove('checked');
-  };
+  window.updateCheckboxStyle = function(cb) { cb.parentElement.classList.toggle('checked', cb.checked); };
 
   function resetUIState() {
     state.hasSubmittedStatement = false; state.hasSubmittedAccusation = false;
@@ -314,6 +305,13 @@
   socket.on('playerListUpdate', updatePlayers);
 
   socket.on('phaseChange', ({ phase, message, suspectList, players, statements, totalPlayers, falseCount }) => {
+    if (phase === 'lobby') {
+      setPhase('lobby', message || '等待房主开始...');
+      resetAllState();
+      clearChat();
+      if (players) updatePlayers(players);
+      return;
+    }
     setPhase(phase, message);
     if (suspectList) { state.suspects = suspectList; $('murdererSelect').innerHTML = suspectList.map(s => `<option value="${s}">${s}</option>`).join(''); }
     if (players) updatePlayers(players);
@@ -387,7 +385,7 @@
 
   socket.on('discussTimeout', () => { if (state.isHost) $('forceAccusationBtn').style.display = 'block'; addChat('[系统] ⏰ 讨论时间已到', true); });
 
-  socket.on('gameResult', ({ falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, mostVotedFalse, mostVotedMurderer, falseCorrect, murdererCorrect, voteDetails }) => {
+  socket.on('gameResult', ({ falseHolders, realMurderer, goodScore, badScore, winner, reasoning, caseTitle, allPlayerRules, falseVotes, murdererVotes, majority, falseCorrect, murdererCorrect, voteDetails }) => {
     setPhase('result', '🏆 游戏结束');
     let vdHtml = '';
     if (voteDetails?.length > 0) {
@@ -446,8 +444,18 @@
     $('accusationStatus').textContent = '已提交，等待其他人...'; $('accusationWaitingNotice').style.display = 'block';
   });
 
-  $('backToLobbyBtn').addEventListener('click', () => { socket.emit('leaveRoom', { roomId: state.roomId }); document.getElementById('gameScreen').classList.remove('active'); document.getElementById('loginScreen').classList.add('active'); clearChat(); resetAllState(); state.myRules = []; });
-  $('leaveRoomBtn').addEventListener('click', () => { socket.emit('leaveRoom', { roomId: state.roomId }); document.getElementById('gameScreen').classList.remove('active'); document.getElementById('loginScreen').classList.add('active'); clearChat(); resetAllState(); state.myRules = []; });
+  $('backToLobbyBtn').addEventListener('click', () => {
+    socket.emit('returnToLobby', { roomId: state.roomId });
+    clearChat();
+    resetAllState();
+  });
+
+  $('leaveRoomBtn').addEventListener('click', () => {
+    socket.emit('leaveRoom', { roomId: state.roomId });
+    document.getElementById('gameScreen').classList.remove('active');
+    document.getElementById('loginScreen').classList.add('active');
+    clearChat(); resetAllState();
+  });
 </script>
 </body>
 </html>
