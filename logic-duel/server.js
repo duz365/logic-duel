@@ -15,7 +15,7 @@ app.use(express.json());
 
 const API_KEY = process.env.SILICONFLOW_API_KEY || '';
 const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODEL = 'Pro/deepseek-ai/DeepSeek-V3.1-Terminus';
+const MODEL = 'Pro/deepseek-ai/DeepSeek-V3.2';
 const MAX_DISCUSS_TIME = 10 * 60 * 1000;
 const API_TIMEOUT = 20000;
 
