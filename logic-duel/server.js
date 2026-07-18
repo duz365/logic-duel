@@ -48,15 +48,38 @@ function getRuleCounts(playerCount) {
   return { totalRules, trueCount: totalRules - falseCount, falseCount };
 }
 
+// ==================== 房间匹配定时检查 ====================
+function checkRoomMatches() {
+  for (const [roomId, queue] of roomMatchQueues.entries()) {
+    const room = rooms.get(roomId);
+    if (!room || room.phase !== 'lobby') {
+      roomMatchQueues.delete(roomId);
+      continue;
+    }
+    if (matchQueue.length > 0) {
+      const guest = matchQueue.shift();
+      room.players.set(guest.socket.id, { nickname: guest.nickname, isBot: false });
+      guest.socket.join(roomId);
+      guest.socket.emit('matchSuccess', {
+        roomId, playerId: guest.socket.id,
+        players: getPlayersList(room), phase: 'lobby', isHost: false,
+        message: '匹配成功！'
+      });
+      io.to(roomId).emit('playerListUpdate', getPlayersList(room));
+      io.to(roomId).emit('roomMatchStatus', { status: 'matched', message: `${guest.nickname} 加入房间` });
+      roomMatchQueues.delete(roomId);
+      console.log(`房间匹配: ${guest.nickname} → ${roomId}`);
+    }
+  }
+}
+setInterval(checkRoomMatches, 2000);
+
 // ==================== AI 生成案件 ====================
 async function generateCase(playerCount) {
   const { totalRules, trueCount, falseCount } = getRuleCounts(playerCount);
   console.log(`\n===== AI生成案件 ===== 玩家:${playerCount} 总规则:${totalRules} 真:${trueCount} 假:${falseCount}`);
   if (!API_KEY) throw new Error('API_KEY未配置');
-
-  const prompt = `你是逻辑谜题大师。生成一个严谨推理案件。输出纯JSON。
-核心约束：嫌疑人3个中文随机名。严格${totalRules}条规则(${trueCount}真${falseCount}假)。每条≤18字，必须包含嫌疑人名。真规则合起来唯一指向凶手。{"caseTitle":"≤8字","caseDescription":"≤40字","suspects":["","",""],"murderer":"","trueRules":[""...${trueCount}条],"falseRules":[""...${falseCount}条],"reasoning":"≤100字"}`;
-
+  const prompt = `你是逻辑谜题大师。生成严谨推理案件。输出纯JSON。嫌疑人3个中文随机名。严格${totalRules}条规则(${trueCount}真${falseCount}假)。每条≤18字，必须包含嫌疑人名。真规则合起来唯一指向凶手。{"caseTitle":"≤8字","caseDescription":"≤40字","suspects":["","",""],"murderer":"","trueRules":[""...${trueCount}条],"falseRules":[""...${falseCount}条],"reasoning":"≤100字"}`;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
@@ -184,33 +207,12 @@ io.on('connection',(socket)=>{
     const room=rooms.get(roomId);
     if(!room||room.host!==socket.id||room.phase!=='lobby')return;
     if(!roomMatchQueues.has(roomId))roomMatchQueues.set(roomId,[]);
-    const queue=roomMatchQueues.get(roomId);
-    if(queue.find(p=>p.socket.id===socket.id))return;
-    queue.push({socket,nickname:'房主'});
-    io.to(roomId).emit('roomMatchStatus',{status:'matching',message:'房主开启了匹配...'});
-    tryRoomMatch(roomId);
+    io.to(roomId).emit('roomMatchStatus',{status:'matching',message:'房主开启了匹配，等待玩家加入...'});
+    console.log(`房间 ${roomId} 开启匹配`);
   });
   socket.on('cancelRoomMatch',({roomId})=>{
     if(roomMatchQueues.has(roomId)){roomMatchQueues.delete(roomId);io.to(roomId).emit('roomMatchStatus',{status:'cancelled',message:'匹配已取消'});}
   });
-
-  function tryRoomMatch(roomId){
-    const room=rooms.get(roomId);
-    if(!room||!roomMatchQueues.has(roomId))return;
-    if(matchQueue.length>=1){
-      const queue=roomMatchQueues.get(roomId);
-      if(queue.length>=1){
-        queue.shift();
-        const guest=matchQueue.shift();
-        room.players.set(guest.socket.id,{nickname:guest.nickname,isBot:false});
-        guest.socket.join(roomId);
-        guest.socket.emit('matchSuccess',{roomId,playerId:guest.socket.id,players:getPlayersList(room),phase:'lobby',isHost:false,message:'匹配成功！'});
-        io.to(roomId).emit('playerListUpdate',getPlayersList(room));
-        io.to(roomId).emit('roomMatchStatus',{status:'matched',message:`${guest.nickname} 加入房间`});
-        roomMatchQueues.delete(roomId);
-      }
-    }
-  }
 
   // ========== 踢人 ==========
   socket.on('kickPlayer',({roomId,targetId})=>{
@@ -218,11 +220,12 @@ io.on('connection',(socket)=>{
     if(!room||room.host!==socket.id||room.phase!=='lobby')return;
     const target=room.players.get(targetId);
     if(!target||targetId===socket.id)return;
+    const ts=io.sockets.sockets.get(targetId);
+    if(ts){ts.leave(roomId);ts.emit('kicked',{message:'你被房主踢出了房间'});}
     room.players.delete(targetId);
     room.discussReady.delete(targetId);
-    const ts=io.sockets.sockets.get(targetId);
-    if(ts){ts.leave(roomId);ts.emit('kicked',{message:'你被房主踢出房间'});}
     io.to(roomId).emit('playerListUpdate',getPlayersList(room));
+    console.log(`${target.nickname} 被踢出房间 ${roomId}`);
   });
 
   // ========== 房间系统 ==========
@@ -271,7 +274,7 @@ io.on('connection',(socket)=>{
   socket.on('leaveRoom',({roomId})=>handleLeave(socket,roomId));
   socket.on('disconnect',()=>{const qi=matchQueue.findIndex(p=>p.socket.id===socket.id);if(qi!==-1)matchQueue.splice(qi,1);for(const[rid,room]of rooms.entries()){if(room.players.has(socket.id)){handleLeave(socket,rid);break;}}});
 
-  function handleLeave(socket,roomId){const room=rooms.get(roomId);if(!room)return;clearBotTimers(room);room.players.delete(socket.id);room.discussReady.delete(socket.id);socket.leave(roomId);if(room.players.size===0){rooms.delete(roomId);return;}if(room.host===socket.id)room.host=room.players.keys().next().value;io.to(roomId).emit('playerListUpdate',getPlayersList(room));}
+  function handleLeave(socket,roomId){const room=rooms.get(roomId);if(!room)return;clearBotTimers(room);room.players.delete(socket.id);room.discussReady.delete(socket.id);socket.leave(roomId);if(room.players.size===0){rooms.delete(roomId);roomMatchQueues.delete(roomId);return;}if(room.host===socket.id)room.host=room.players.keys().next().value;io.to(roomId).emit('playerListUpdate',getPlayersList(room));}
 });
 
 const PORT = process.env.PORT || 3000;
