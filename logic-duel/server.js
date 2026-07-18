@@ -52,10 +52,19 @@ function getRuleCounts(playerCount) {
 function checkRoomMatches() {
   for (const [roomId, queue] of roomMatchQueues.entries()) {
     const room = rooms.get(roomId);
-    if (!room || room.phase !== 'lobby') {
+    // 房间不存在、游戏已开始、或房主取消匹配
+    if (!room || room.phase !== 'lobby' || !roomMatchQueues.has(roomId)) {
       roomMatchQueues.delete(roomId);
       continue;
     }
+    // 满员(6人)自动关闭
+    const totalPlayers = room.players.size + room.bots.size;
+    if (totalPlayers >= 6) {
+      roomMatchQueues.delete(roomId);
+      io.to(roomId).emit('roomMatchStatus', { status: 'cancelled', message: '房间已满，匹配自动关闭' });
+      continue;
+    }
+    // 有人就匹配进来
     if (matchQueue.length > 0) {
       const guest = matchQueue.shift();
       room.players.set(guest.socket.id, { nickname: guest.nickname, isBot: false });
@@ -67,8 +76,8 @@ function checkRoomMatches() {
       });
       io.to(roomId).emit('playerListUpdate', getPlayersList(room));
       io.to(roomId).emit('roomMatchStatus', { status: 'matched', message: `${guest.nickname} 加入房间` });
-      roomMatchQueues.delete(roomId);
       console.log(`房间匹配: ${guest.nickname} → ${roomId}`);
+      // 不删除，继续匹配
     }
   }
 }
@@ -207,11 +216,11 @@ io.on('connection',(socket)=>{
     const room=rooms.get(roomId);
     if(!room||room.host!==socket.id||room.phase!=='lobby')return;
     if(!roomMatchQueues.has(roomId))roomMatchQueues.set(roomId,[]);
-    io.to(roomId).emit('roomMatchStatus',{status:'matching',message:'房主开启了匹配，等待玩家加入...'});
+    io.to(roomId).emit('roomMatchStatus',{status:'matching',message:'匹配已开启，等待玩家加入...'});
     console.log(`房间 ${roomId} 开启匹配`);
   });
   socket.on('cancelRoomMatch',({roomId})=>{
-    if(roomMatchQueues.has(roomId)){roomMatchQueues.delete(roomId);io.to(roomId).emit('roomMatchStatus',{status:'cancelled',message:'匹配已取消'});}
+    if(roomMatchQueues.has(roomId)){roomMatchQueues.delete(roomId);io.to(roomId).emit('roomMatchStatus',{status:'cancelled',message:'匹配已关闭'});}
   });
 
   // ========== 踢人 ==========
@@ -225,7 +234,6 @@ io.on('connection',(socket)=>{
     room.players.delete(targetId);
     room.discussReady.delete(targetId);
     io.to(roomId).emit('playerListUpdate',getPlayersList(room));
-    console.log(`${target.nickname} 被踢出房间 ${roomId}`);
   });
 
   // ========== 房间系统 ==========
@@ -234,7 +242,7 @@ io.on('connection',(socket)=>{
   socket.on('addBots',({roomId,count})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;for(let i=0;i<count;i++)room.bots.set(generateBotId(),{nickname:getBotName(room.bots.size+i),isBot:true});io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
   socket.on('removeBots',({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id||room.phase!=='lobby')return;room.bots.clear();room.botMemories.clear();io.to(roomId).emit('playerListUpdate',getPlayersList(room));});
 
-  socket.on('startGame',async({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id)return;const tp=room.players.size+room.bots.size;if(tp<2){socket.emit('errorMessage','至少2人');return;}room.totalPlayers=tp;room.phase='preparing';room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'preparing',message:'AI生成案件中...'});try{room.caseData=await generateCase(tp);}catch(e){socket.emit('errorMessage','案件生成失败');room.phase='lobby';return;}const{falseCount}=getRuleCounts(tp);const as=assignRules(room.caseData.trueRules,room.caseData.falseRules,tp);const pids=Array.from(room.players.keys());room.playerAssignments=[];for(let i=0;i<pids.length;i++)room.playerAssignments.push({playerId:pids[i],rules:as[i].playerRules,hasFalse:as[i].hasFalse});const bids=Array.from(room.bots.keys());room.botAssignments=[];for(let i=0;i<bids.length;i++)room.botAssignments.push({botId:bids[i],rules:as[pids.length+i].playerRules,hasFalse:as[pids.length+i].hasFalse});room.botMemories.clear();bids.forEach(bid=>room.botMemories.set(bid,[]));room.phase='reading';room.statements=[];room.accusations=[];room.discussReady=new Set();io.to(roomId).emit('phaseChange',{phase:'reading',message:'查看规则',totalPlayers:tp,falseCount});for(const a of room.playerAssignments){const ps=io.sockets.sockets.get(a.playerId);if(ps)ps.emit('yourRules',{rules:a.rules,hasFalseRule:a.hasFalse,caseTitle:room.caseData.caseTitle,caseDescription:room.caseData.caseDescription,suspects:room.caseData.suspects});}room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='reading'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:tp});if(room.discussReady.size===tp){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:tp,falseCount});startBotStatements(room,roomId);}}},2000+Math.random()*3000);room.botTimers.push(timer);});});
+  socket.on('startGame',async({roomId})=>{const room=rooms.get(roomId);if(!room||room.host!==socket.id)return;const tp=room.players.size+room.bots.size;if(tp<2){socket.emit('errorMessage','至少2人');return;}room.totalPlayers=tp;room.phase='preparing';room.statementSubmitted=new Set();roomMatchQueues.delete(roomId);io.to(roomId).emit('phaseChange',{phase:'preparing',message:'AI生成案件中...'});io.to(roomId).emit('roomMatchStatus',{status:'cancelled',message:''});try{room.caseData=await generateCase(tp);}catch(e){socket.emit('errorMessage','案件生成失败');room.phase='lobby';return;}const{falseCount}=getRuleCounts(tp);const as=assignRules(room.caseData.trueRules,room.caseData.falseRules,tp);const pids=Array.from(room.players.keys());room.playerAssignments=[];for(let i=0;i<pids.length;i++)room.playerAssignments.push({playerId:pids[i],rules:as[i].playerRules,hasFalse:as[i].hasFalse});const bids=Array.from(room.bots.keys());room.botAssignments=[];for(let i=0;i<bids.length;i++)room.botAssignments.push({botId:bids[i],rules:as[pids.length+i].playerRules,hasFalse:as[pids.length+i].hasFalse});room.botMemories.clear();bids.forEach(bid=>room.botMemories.set(bid,[]));room.phase='reading';room.statements=[];room.accusations=[];room.discussReady=new Set();io.to(roomId).emit('phaseChange',{phase:'reading',message:'查看规则',totalPlayers:tp,falseCount});for(const a of room.playerAssignments){const ps=io.sockets.sockets.get(a.playerId);if(ps)ps.emit('yourRules',{rules:a.rules,hasFalseRule:a.hasFalse,caseTitle:room.caseData.caseTitle,caseDescription:room.caseData.caseDescription,suspects:room.caseData.suspects});}room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='reading'){room.discussReady.add(a.botId);io.to(roomId).emit('readyProgress',{ready:room.discussReady.size,total:tp});if(room.discussReady.size===tp){room.phase='statement';room.discussReady.clear();room.statements=[];room.statementSubmitted=new Set();io.to(roomId).emit('phaseChange',{phase:'statement',message:'陈述阶段',totalPlayers:tp,falseCount});startBotStatements(room,roomId);}}},2000+Math.random()*3000);room.botTimers.push(timer);});});
 
   function startBotStatements(room,roomId){room.botAssignments.forEach((a)=>{const timer=setTimeout(()=>{if(room.phase==='statement'){const rule=botSelectStatement(a.rules);room.statements.push({playerId:a.botId,nickname:room.bots.get(a.botId).nickname,rule});room.statementSubmitted.add(a.botId);io.to(roomId).emit('statementSubmitProgress',{submitted:room.statementSubmitted.size,total:room.totalPlayers});if(room.statementSubmitted.size===room.totalPlayers)revealStatements(room,roomId);}},3000+Math.random()*4000);room.botTimers.push(timer);});}
   function revealStatements(room,roomId){io.to(roomId).emit('statementsRevealed',room.statements);setTimeout(()=>{room.phase='discuss';room.discussReady.clear();io.to(roomId).emit('phaseChange',{phase:'discuss',message:'讨论',statements:room.statements,suspectList:room.caseData.suspects,totalPlayers:room.totalPlayers,falseCount:getRuleCounts(room.totalPlayers).falseCount});startBotDiscussion(room,roomId);setTimeout(()=>{if(room.phase==='discuss')io.to(roomId).emit('discussTimeout');},MAX_DISCUSS_TIME);},2000);}
